@@ -1,0 +1,41 @@
+# Deep Learning and Machine Learning Models
+*.keras
+*.h5
+*.hdf5
+*.pkl
+*.joblib
+*.onnx
+*.safetensors
+
+# Python Caches & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+venv/
+.venv/
+env/
+.env/
+Pipfile.lock
+
+# Logs and Data Files
+*.log
+*.csv
+# If you need to keep CSVs in repo, comment out the line above.
+dataset/
+*.idx
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Frontend / Node
+node_modules/
+dist/
+build/
+.npm/
+
+# Build Artefacts
+*.egg-info/

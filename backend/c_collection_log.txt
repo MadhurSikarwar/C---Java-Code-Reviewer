@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "C:\Users\Madhu\OneDrive\Desktop\Projects\IntelliReview\backend\ml\juliet_data_collector.py", line 425, in <module>
+    collect(
+  File "C:\Users\Madhu\OneDrive\Desktop\Projects\IntelliReview\backend\ml\juliet_data_collector.py", line 258, in collect
+    print(f"\U0001f5d1\ufe0f  Cleared existing {OUTPUT_PATH}")
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.9_3.9.3568.0_x64__qbz5n2kfra8p0\lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 0-1: character maps to <undefined>
