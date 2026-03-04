@@ -32,6 +32,7 @@ class CFGNode:
         uses = []
         returns = []
         decls = []
+        ordered_ops = []  # To track uses and assigns sequentially
 
         def get_min_line(stmt_list):
             min_idx = -1
@@ -56,23 +57,31 @@ class CFGNode:
                     self.visit(child)
 
             def visit_Assignment(self, n):
+                self.visit(n.rvalue)
                 if isinstance(n.lvalue, c_ast.ID):
                     assigned_var = n.lvalue.name
                     assigns.append(assigned_var)
+                    ordered_ops.append(("ASSIGN", assigned_var))
                     if isinstance(n.rvalue, c_ast.FuncCall) and getattr(n.rvalue.name, 'name', '') in ("malloc", "calloc"):
                         allocs.append(assigned_var)
-                self.visit(n.rvalue)
                 
             def visit_Decl(self, n):
                 decls.append(n.name)
-                if n.init:
+                # Arrays decay to pointers when passed, counting them as assigned on declaration avoids false uninit readings
+                if isinstance(n.type, c_ast.ArrayDecl):
                     assigns.append(n.name)
+                    ordered_ops.append(("ASSIGN", n.name))
+                    
+                if n.init:
+                    self.visit(n.init)
+                    assigns.append(n.name)
+                    ordered_ops.append(("ASSIGN", n.name))
                     if isinstance(n.init, c_ast.FuncCall) and getattr(n.init.name, 'name', '') in ("malloc", "calloc"):
                         allocs.append(n.name)
-                    self.visit(n.init)
                     
             def visit_ID(self, n):
                 uses.append(n.name)
+                ordered_ops.append(("USE", n.name))
                 
             def visit_Return(self, n):
                 if n.expr:
@@ -95,6 +104,7 @@ class CFGNode:
             "frees": list(set(frees)),
             "assigns": list(set(assigns)),
             "uses": list(set(uses)),
+            "ordered_ops": ordered_ops,
             "returns": list(set(returns)),
             "decls": list(set(decls))
         }

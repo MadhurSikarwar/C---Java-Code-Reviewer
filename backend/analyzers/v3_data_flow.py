@@ -56,23 +56,35 @@ def analyze_data_flow(source: str, cfg_list: List[Dict[str, Any]]) -> Dict[str, 
             node_line = node.get("line", -1)
             state_out = deepcopy(state_in)
             
-            assigns = node.get("assigns", [])
+            ordered_ops = node.get("ordered_ops", [])
             uses = node.get("uses", [])
             
-            # Uninitialized variable check
-            for u in uses:
-                if u in local_vars and state_out.get(u) != "INITIALIZED":
-                    metrics["uninitialized_vars_used"] += 1
+            # Sequence-aware variable initialization tracking
+            for op, var in ordered_ops:
+                if op == "ASSIGN":
+                    state_out[var] = "INITIALIZED"
+                elif op == "USE":
+                    if var in local_vars and state_out.get(var) != "INITIALIZED":
+                        metrics["uninitialized_vars_used"] += 1
+                    
+                    # Dynamically Calibrate Severity
+                    # If it's just being read inside a standard assignment or branch evaluation, it's MEDIUM noise.
+                    # If it's being returned to the caller or pushed into a function arguments stack, it's a CRITICAL escalation.
+                    node_name = str(node.get("name", ""))
+                    if "Return" in node_name or "FuncCall" in node_name:
+                        scaled_severity = "CRITICAL"
+                        msg_suffix = "and directly returned or passed out of scope."
+                    else:
+                        scaled_severity = "MEDIUM"
+                        msg_suffix = "but captured during local CFG evaluation."
+
                     warnings.append(DataFlowWarning(
-                        "UNINITIALIZED_VARIABLE", "CRITICAL",
-                        f"Uninitialized Variable: Local variable '{u}' is read before assignment on this execution path.",
+                        "UNINITIALIZED_VARIABLE", scaled_severity,
+                        f"Uninitialized Variable: Local variable '{var}' is read before assignment on this execution path {msg_suffix}",
                         curr_id, node_line
                     ))
-                    # Prevent duplicate report logging on same path
-                    state_out[u] = "INITIALIZED"
-            
-            for a in assigns:
-                state_out[a] = "INITIALIZED"
+                    # Prevent duplicate log noise on same arc
+                    state_out[var] = "INITIALIZED"
                 
             # Infinite Loop heuristic over AST branches
             if node.get("name") == "While Cond":

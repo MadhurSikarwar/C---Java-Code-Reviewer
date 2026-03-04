@@ -1,17 +1,15 @@
 """
-IntelliReview — MASSIVE Deep Learning Trainer
-================================================================
-Uses TensorFlow/Keras to build a gigabyte-scale Deep Neural Network (DNN).
-This model scales up to over 130 Million parameters to reach ~99% accuracy
-by learning incredibly complex non-linear combinations of the 19 features.
+IntelliReview — Deep Learning Trainer  (V1 — 19 features)
+===========================================================
+Uses TensorFlow/Keras to train a compact, well-regularised DNN.
 
 What this script does:
-  1. Loads all 4 datasets (Synthetic + Juliet C + Juliet Java + Real)
-  2. Standardizes the features (crucial for Deep Learning)
-  3. Builds an ultra-wide architecture:
-       Input(19) -> Dense(16384) -> Dense(8192) -> Dense(4096) -> Output(3)
-  4. Saves to a NEW file: `model_dl_massive.keras`
-     (Leaves the original model.pkl completely untouched!)
+  1. Loads all datasets (Synthetic + Juliet C/Java + Real) — 19 features
+  2. Standardizes the features with StandardScaler
+  3. Builds a right-sized architecture:
+       Input(19) -> Dense(256) -> Dense(128) -> Dense(64) -> Output(3)
+  4. Saves to: model_dl_v1_19feat.keras  (scaler: dl_scaler_v1_19feat.pkl)
+     (Leaves model.pkl and V3 models completely untouched!)
 
 Requirements:
   pip install tensorflow pandas scikit-learn
@@ -52,8 +50,8 @@ from ml.synthetic_data import generate_synthetic_data, FEATURE_NAMES
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 MODEL_DIR             = os.path.dirname(os.path.abspath(__file__))
-SCALER_PATH           = os.path.join(MODEL_DIR, "dl_scaler.pkl")
-DL_MODEL_PATH         = os.path.join(MODEL_DIR, "model_dl_massive.keras")
+SCALER_PATH           = os.path.join(MODEL_DIR, "dl_scaler_v1_19feat.pkl")
+DL_MODEL_PATH         = os.path.join(MODEL_DIR, "model_dl_v1_19feat.keras")
 
 REAL_DATA_PATH        = os.path.join(MODEL_DIR, "real_data.csv")
 JULIET_DATA_PATH      = os.path.join(MODEL_DIR, "juliet_data.csv")
@@ -110,48 +108,37 @@ def load_all_data():
         
     return X, y, class_weights
 
-# ── The Massive Neural Network Architecture ───────────────────────────────
-def build_massive_dnn(input_dim):
+# ── Neural Network Architecture ───────────────────────────────────────────
+def build_dnn(input_dim):
     """
-    Builds an exceptionally large Dense Neural Network.
-    Layer 1: 16,384 neurons (requires ~300k params)
-    Layer 2:  8,192 neurons (requires ~134 MILLION params) -> Here is the massive scaling!
-    Layer 3:  2,048 neurons (requires ~16 Million params)
-    Layer 4:    512 neurons (requires ~1 Million params)
+    Right-sized DNN for 19 tabular features → 3 classes.
+    ~100k parameters — fast to train, not prone to overfitting.
     """
-    print("\n🏗️ Building Massive Deep Neural Network parameters (~600MB+ in memory)...")
+    print(f"\n🏗️ Building DNN for {input_dim} features...")
     model = Sequential([
         Input(shape=(input_dim,)),
-        
-        # Layer 1 - Ultra Wide
-        Dense(16384, activation="relu"),
+
+        Dense(256, activation="relu"),
         BatchNormalization(),
         Dropout(0.3),
-        
-        # Layer 2 - The Behemoth
-        Dense(8192, activation="relu"),
-        BatchNormalization(),
-        Dropout(0.3),
-        
-        # Layer 3 - Bottlenecking down
-        Dense(2048, activation="relu"),
+
+        Dense(128, activation="relu"),
         BatchNormalization(),
         Dropout(0.2),
 
-        # Layer 4 - Refinement
-        Dense(512, activation="relu"),
+        Dense(64, activation="relu"),
         BatchNormalization(),
-        
-        # Output layer (3 classes: Clean, Moderate, High)
+
+        # Output layer (3 classes: Clean, Moderate Risk, High Risk)
         Dense(3, activation="softmax")
     ])
 
     model.compile(
-        optimizer=Adam(learning_rate=0.001), 
-        loss="sparse_categorical_crossentropy", 
+        optimizer=Adam(learning_rate=0.001),
+        loss="sparse_categorical_crossentropy",
         metrics=["accuracy"]
     )
-    
+
     model.summary()
     return model
 
@@ -180,21 +167,20 @@ def main():
     print(f"\n💾 Saved Scaler to: {SCALER_PATH}")
 
     # 4. Build Model
-    model = build_massive_dnn(input_dim=X_train.shape[1])
+    model = build_dnn(input_dim=X_train.shape[1])
 
-    # 5. Callbacks (Stop early if we hit 99%, reduce learning rate if stuck)
-    early_stop = EarlyStopping(monitor="val_accuracy", patience=10, restore_best_weights=True)
-    reduce_lr  = ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=3, min_lr=1e-6)
+    # 5. Callbacks — monitor val_loss for stable convergence
+    early_stop = EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True)
+    reduce_lr  = ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=4, min_lr=1e-6)
 
     # 6. Train the Model
-    print("\n🔥 COMMENCING MASSIVE NEURAL NETWORK TRAINING 🔥")
-    print("   Note: Because this model is massive, each epoch may take some time depending on your CPU/GPU.")
-    
+    print("\n🔥 Training DL Model (V1 — 19 features)...")
+
     history = model.fit(
         X_train_scaled, y_train,
         validation_split=0.15,
-        epochs=50,
-        batch_size=128,  # Slightly larger batch to feed the beast
+        epochs=60,
+        batch_size=256,
         class_weight=class_weights,
         callbacks=[early_stop, reduce_lr],
         verbose=1
@@ -220,13 +206,14 @@ def main():
 
     # 8. Save
     model.save(DL_MODEL_PATH)
-    
+
     # Print file size
     mb_size = os.path.getsize(DL_MODEL_PATH) / (1024 * 1024)
-    print(f"\n💾 MASSIVE MODEL SAVED SUCCESSFULLY.")
-    print(f"   Path: {DL_MODEL_PATH}")
-    print(f"   Size: {mb_size:.2f} MB")
-    print("\n🎉 DONE! The original model.pkl remains exactly as it was. You now have a DL alternative.")
+    print(f"\n💾 DL Model (V1/19-feat) SAVED SUCCESSFULLY.")
+    print(f"   Path:  {DL_MODEL_PATH}")
+    print(f"   Size:  {mb_size:.2f} MB")
+    print(f"   Scaler: {SCALER_PATH}")
+    print("\n🎉 DONE! Run predict.py with model_type='dl' to use this model.")
 
 if __name__ == "__main__":
     # Prevent TF from taking over all VRAM aggressively if user has a GPU

@@ -4,104 +4,17 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>IntelliReview — ExtraTrees Ensemble</title>
+    <title>IntelliReview &mdash; Ensemble Stacking Model</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
         rel="stylesheet" />
     <link rel="stylesheet" href="style.css" />
-    <style>
-        .model-container {
-            max-width: 900px;
-            margin: 4rem auto;
-            padding: 2rem;
-        }
 
-        .model-header {
-            text-align: center;
-            margin-bottom: 3rem;
-        }
-
-        .model-header h1 {
-            font-size: 3rem;
-            color: var(--clr-text-1);
-            margin-bottom: 1rem;
-        }
-
-        .model-header p {
-            font-size: 1.2rem;
-            color: var(--clr-text-3);
-        }
-
-        .btn-back {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            color: var(--clr-text-2);
-            padding: 0.6rem 1.2rem;
-            border-radius: 6px;
-            text-decoration: none;
-            transition: 0.2s;
-            font-weight: 500;
-            margin-bottom: 2rem;
-        }
-
-        .btn-back:hover {
-            background: rgba(255, 255, 255, 0.1);
-            color: var(--clr-text-1);
-        }
-
-        .content-card {
-            background: var(--clr-surface-dim);
-            border: 1px solid var(--clr-border);
-            border-radius: 12px;
-            padding: 2.5rem;
-            margin-bottom: 2rem;
-        }
-
-        .content-card h2 {
-            color: var(--clr-primary);
-            margin-bottom: 1rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            padding-bottom: 0.5rem;
-        }
-
-        .content-card p {
-            line-height: 1.7;
-            color: var(--clr-text-2);
-            margin-bottom: 1rem;
-            font-size: 1.05rem;
-        }
-
-        .content-card ul {
-            list-style: disk;
-            padding-left: 1.5rem;
-            margin-bottom: 1rem;
-            color: var(--clr-text-2);
-        }
-
-        .content-card li {
-            margin-bottom: 0.5rem;
-            line-height: 1.6;
-        }
-
-        .badge-stat {
-            display: inline-block;
-            background: var(--clr-primary);
-            color: white;
-            padding: 0.2rem 0.6rem;
-            border-radius: 4px;
-            font-weight: 600;
-            font-size: 0.9rem;
-            margin-right: 0.5rem;
-        }
-    </style>
 </head>
 
-<body>
+<body class="en-theme">
     <div class="bg-gradient"></div>
     <div class="bg-orbs">
         <div class="orb orb-1"></div>
@@ -117,18 +30,10 @@
                         <path d="M8 6L4 16L8 26" stroke="url(#g1)" stroke-width="2.5" stroke-linecap="round" />
                         <path d="M24 6L28 16L24 26" stroke="url(#g1)" stroke-width="2.5" stroke-linecap="round" />
                         <circle cx="16" cy="16" r="3" fill="url(#g1)" />
-                        <path d="M13 10L19 22" stroke="url(#g2)" stroke-width="1.5" stroke-linecap="round"
-                            opacity="0.6" />
-                        <path d="M19 10L13 22" stroke="url(#g2)" stroke-width="1.5" stroke-linecap="round"
-                            opacity="0.6" />
                         <defs>
                             <linearGradient id="g1" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
                                 <stop stop-color="#6366f1" />
                                 <stop offset="1" stop-color="#8b5cf6" />
-                            </linearGradient>
-                            <linearGradient id="g2" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-                                <stop stop-color="#06b6d4" />
-                                <stop offset="1" stop-color="#6366f1" />
                             </linearGradient>
                         </defs>
                     </svg>
@@ -142,47 +47,88 @@
     </header>
 
     <main class="model-container">
-        <a href="index.html" class="btn-back">← Back to Dashboard</a>
+        <a href="index.html" class="btn-back">&#8592; Back to Dashboard</a>
 
         <div class="model-header">
-            <span style="font-size: 4rem;">🌳</span>
-            <h1>ExtraTrees Ensemble Model</h1>
-            <p>The highly-optimized, incredibly fast machine learning engine built on scikit-learn's
-                ExtraTreesClassifier.</p>
+            <div class="model-badge">EN &mdash; ENSEMBLE</div>
+            <h1>Ensemble Stacking Classifier</h1>
+            <p>A classic machine learning ensemble combining three gradient-boosted and tree-based classifiers via a
+                stacking meta-learner for robust, interpretable risk classification.</p>
         </div>
 
-        <div class="content-card glass-card">
+        <div class="model-spec-card">
             <h2>Technical Specifications</h2>
-            <p><span class="badge-stat">Accuracy:</span> <strong>100.0%</strong> on synthesized logic tests</p>
-            <p><span class="badge-stat">Feature Vector:</span> <strong>21 Variables</strong></p>
-            <p><span class="badge-stat">Inference Time:</span> <strong>&lt; 5ms</strong></p>
+            <div class="stat-grid">
+                <div class="stat-item">
+                    <div class="stat-label">Input Features</div>
+                    <div class="stat-value">19</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Base Learners</div>
+                    <div class="stat-value">3</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Meta-Learner</div>
+                    <div class="stat-value">Logistic Reg.</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Class Balance</div>
+                    <div class="stat-value">SMOTE</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Framework</div>
+                    <div class="stat-value">scikit-learn</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Output</div>
+                    <div class="stat-value">3-class Softmax</div>
+                </div>
+            </div>
+        </div>
 
-            <h2 style="margin-top: 2rem;">How It Works</h2>
-            <p>
-                The ExtraTrees (Extremely Randomized Trees) model serves as IntelliReview's baseline defense. It
-                operates by building a vast forest of decision trees—but unlike standard Random Forests, it selects the
-                split points entirely at random for each feature. This extreme randomization significantly reduces the
-                variance of the model, making it exceptionally robust against overfitting while maintaining blistering
-                inference speeds.
-            </p>
-            <p>
-                The model relies on <strong>21 syntactical and lexical features</strong> extracted directly from the
-                Abstract Syntax Tree (AST), including:
-            </p>
+        <div class="model-spec-card">
+            <h2>Base Learner Architecture</h2>
+            <p>The ensemble stacks three independent classifiers trained on the same 19-feature vector, each
+                contributing complementary signal to the meta-learner:</p>
             <ul>
-                <li>Cyclomatic Complexity measurements mapping deeply nested loops.</li>
-                <li>Aggressive scans for unsafe C functions (e.g., `strcpy`, `gets`).</li>
-                <li>Memory block tracing tracking un-freed `malloc` instantiations.</li>
-                <li>Recursion depths and nesting severity indexing.</li>
+                <li><strong>LightGBM</strong> &mdash; Gradient-boosted trees optimised with Optuna hyperparameter
+                    search. Excellent at capturing non-linear feature interactions across sparse code-metric
+                    distributions.</li>
+                <li><strong>XGBoost</strong> &mdash; Extreme gradient boosting with histogram-based splits. Regularised
+                    with L1/L2 to prevent overfitting on minority classes.</li>
+                <li><strong>Extra Trees (ET)</strong> &mdash; Extremely randomised trees providing high variance
+                    diversity from the other two learners, improving out-of-bag generalisation.</li>
             </ul>
+            <p>A <strong>Logistic Regression meta-learner</strong> combines the out-of-fold probability predictions from
+                each base learner via cross-validated stacking, producing the final 3-class probability output (Clean /
+                Moderate Risk / High Risk).</p>
+        </div>
 
-            <h2 style="margin-top: 2rem;">Best Use Cases</h2>
-            <p>
-                Ideal for <strong>lightning-fast validation pipelines</strong>, continuous integration (CI) webhook
-                scans, and initial vulnerability triage. Because it does not delve deeply into path execution graphs, it
-                is less computationally intensive than the V3/CNN architectures, giving instant feedback for
-                surface-level memory and structural anomalies.
-            </p>
+        <div class="model-spec-card">
+            <h2>Training Pipeline</h2>
+            <ul>
+                <li><strong>Data source:</strong> 19-feature vector extracted by the base static analyser (LOC, CC,
+                    memory leak count, unsafe function count, recursion count, etc.)</li>
+                <li><strong>Class balancing:</strong> SMOTE (Synthetic Minority Over-sampling Technique) applied on the
+                    training split to handle imbalanced Clean / Moderate / High Risk class distributions.</li>
+                <li><strong>Hyperparameter tuning:</strong> LightGBM tuned via Optuna with 50 trials optimising the
+                    weighted F1-score.</li>
+                <li><strong>Cross-validation:</strong> 5-fold stratified CV used for both Optuna and stacking
+                    out-of-fold predictions.</li>
+                <li><strong>Output file:</strong> <code>model.pkl</code> &mdash; scikit-learn Pipeline object (scaler +
+                    stacking ensemble).</li>
+            </ul>
+        </div>
+
+        <div class="model-spec-card">
+            <h2>When to Use the Ensemble</h2>
+            <p>The Ensemble model is the most <strong>interpretable</strong> of the four models. Each base learner
+                produces per-class probabilities that can be individually inspected. It performs well on code with
+                straightforward metric signatures where the features are good linear/tree-node separators. It is the
+                fastest at inference time with no GPU requirement.</p>
+            <p>Use it as a <strong>baseline reference</strong> — if the Ensemble and V3 agree but DL V1 disagrees, the
+                DL model may be picking up on subtle non-linear patterns the trees miss, or it may be a false alarm
+                worth investigating.</p>
         </div>
     </main>
 </body>

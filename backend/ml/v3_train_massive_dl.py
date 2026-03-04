@@ -14,7 +14,8 @@ import joblib
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 try:
-    os.add_dll_directory(r"C:\CUDA_Manual\bin")
+    if os.name == 'nt':
+        os.add_dll_directory(r"C:\CUDA_Manual\bin")
 except Exception:
     pass
 
@@ -79,28 +80,29 @@ def generate_massive_dataset(num_samples: int = 50000):
     final_df = final_df.sample(n=num_samples, random_state=42).reset_index(drop=True)
     return final_df
 
-def build_massive_cnn_dnn(input_dim):
+def build_v3_dnn(input_dim):
     """
-    Builds a ~160,000,000 Parameter architecture.
+    Right-sized DNN for 34 tabular features (CLASSIC + V3) → 3 classes.
+    ~200k parameters — efficient, well-regularised, fast on CPU.
     """
     model = Sequential([
-        # Expansion layer
-        Dense(4096, activation='relu', input_shape=(input_dim,)),
+        Dense(512, activation='relu', input_shape=(input_dim,)),
         BatchNormalization(),
-        # Mega Layers
-        Dense(8192, activation='relu'),
-        Dense(8192, activation='relu'),
-        Dense(8192, activation='relu'),
-        Dense(4096, activation='relu'),
-        # Compression & Classifier
-        Dense(1024, activation='relu'),
+        Dropout(0.3),
+
+        Dense(256, activation='relu'),
+        BatchNormalization(),
         Dropout(0.2),
-        # Mixed precision outputs require float32
+
+        Dense(128, activation='relu'),
+        BatchNormalization(),
+
+        # Mixed precision outputs require explicit float32
         Dense(3, activation='softmax', dtype='float32')
     ])
-    
+
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.0002),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
         loss='sparse_categorical_crossentropy',
         metrics=['accuracy']
     )
@@ -137,8 +139,8 @@ def train():
         
         X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.15, random_state=42)
         
-        print("\n🏗️ Building Colossal Neural Architecture...")
-        model = build_massive_cnn_dnn(X.shape[1])
+        print("\n🏗️ Building V3 Neural Architecture (34 features)...")
+        model = build_v3_dnn(X.shape[1])
         model.summary()
         
         print("\n🧠 Commencing Deep Training Phase (CPU Offload Active to prevent OOM)...")
@@ -150,29 +152,31 @@ def train():
             verbose=1
         )
         
-        epochs = 50 
-        batch_size = 128 # CPU can handle larger batches via system RAM
-        
+        epochs = 60
+        batch_size = 256
+
+        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=4, min_lr=1e-6)
+
         model.fit(
             X_train, y_train,
             epochs=epochs,
             batch_size=batch_size,
             validation_data=(X_test, y_test),
-            callbacks=[early_stop],
+            callbacks=[early_stop, reduce_lr],
             verbose=1
         )
         
-        # Save
+        # Save — use a distinct name so it doesn't overwrite the V1 19-feature model
         base_dir = os.path.dirname(__file__)
-        out_path = os.path.join(base_dir, "model_dl_massive.keras")
-        scaler_path = os.path.join(base_dir, "dl_scaler.pkl")
-        
-        print("\n💾 Serializing 340M+ parameter neural matrix to disk (This may take a minute...)")
+        out_path = os.path.join(base_dir, "model_dl_v3_34feat.keras")
+        scaler_path = os.path.join(base_dir, "dl_scaler_v3_34feat.pkl")
+
+        print("\n💾 Saving V3 DL model (34 features)...")
         model.save(out_path)
         joblib.dump(scaler, scaler_path)
-        
+
         size_mb = os.path.getsize(out_path) / (1024 * 1024)
-        print(f"\n✅ SUCCESS! Massive DL Model saved to: {out_path}")
+        print(f"\n✅ SUCCESS! V3 DL Model saved to: {out_path}")
         print(f"⚖️ Final Model Size: {size_mb:.2f} MB")
         
     except Exception as e:

@@ -12,13 +12,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import MODEL_PATH, ENCODER_PATH, RISK_CLEAN_MAX, RISK_MODERATE_MAX
 from ml.synthetic_data import FEATURE_NAMES   # single source of truth
 
-DL_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_dl_massive.keras")
-DL_SCALER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dl_scaler.pkl")
+DL_MODEL_PATH    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_dl_v1_19feat.keras")
+DL_SCALER_PATH   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dl_scaler_v1_19feat.pkl")
+DL_V4_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_v4_dedup_massive.keras")
+DL_V4_SCALER_PATH= os.path.join(os.path.dirname(os.path.abspath(__file__)), "v4_scaler.pkl")
 
-_model = None
-_dl_model = None
+_model     = None  # sklearn stacking ensemble (19 features)
+_dl_model  = None  # Keras DL V1 (19 features)
 _dl_scaler = None
-_v3_model = None
+_v3_model  = None  # RF path-sensitive (34 features)
+_v4_model  = None  # Keras DL V4 dedup (36 features)
+_v4_scaler = None
 _label_names = ["Clean", "Moderate Risk", "High Risk"]
 
 
@@ -90,20 +94,56 @@ def load_v3_model():
     print(f"✅ V3 Model loaded from {v3_path}")
 
 
+def load_v4_dl_model():
+    """Load the V4 36-feature Dedup DL model and its scaler."""
+    global _v4_model, _v4_scaler
+    if _v4_model is not None:
+        return
+
+    if not os.path.exists(DL_V4_MODEL_PATH):
+        print(f"⚠️  V4 DL model not found at {DL_V4_MODEL_PATH}. Run v4_train_dedup_dl.py first.")
+        return
+
+    import logging
+    logging.getLogger("tensorflow").setLevel(logging.ERROR)
+    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+    try:
+        if os.name == 'nt':
+            try:
+                os.add_dll_directory(r"C:\CUDA_Manual\bin")
+            except Exception:
+                pass
+        from tensorflow.keras.models import load_model as keras_load
+        _v4_model = keras_load(DL_V4_MODEL_PATH)
+        if os.path.exists(DL_V4_SCALER_PATH):
+            _v4_scaler = joblib.load(DL_V4_SCALER_PATH)
+        else:
+            print("⚠️  V4 scaler not found — will use unscaled input.")
+        print(f"✅ V4 DL model loaded from {DL_V4_MODEL_PATH}")
+    except Exception as e:
+        print(f"❌ Failed to load V4 DL model: {e}")
+
+
 def predict_risk(feature_vector: List[float], model_type: str = "v3", issues: List[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Given a feature vector, return risk label, score 0–100, and per-class probabilities.
-    model_type: 'dl', 'v3', or 'all'.
+    model_type: 'dl', 'v3', 'ensemble', 'v4_dl', or 'all'.
     """
-    models_to_run = ["dl", "v3"] if model_type == "all" else [model_type]
+    ALL_MODELS = ["ensemble", "dl", "v3", "v4_dl"]
+    models_to_run = ALL_MODELS if model_type == "all" else [model_type]
     results = {}
 
     X_full = np.array(feature_vector).reshape(1, -1)
     
-    # Classic features for old ensemble model (just in case it is still explicitly requested)
+    # Classic features for ensemble model — always exactly 21 features
     X_classic = np.copy(X_full)
     if X_classic.shape[1] > 21:
         X_classic = X_classic[:, :21]
+    elif X_classic.shape[1] < 21:
+        # Pad with zeros to reach the 21 features the ensemble was trained on
+        padding = np.zeros((1, 21 - X_classic.shape[1]))
+        X_classic = np.hstack((X_classic, padding))
 
     for m_type in models_to_run:
         label_idx = 0
@@ -115,7 +155,8 @@ def predict_risk(feature_vector: List[float], model_type: str = "v3", issues: Li
             if _dl_model is None: continue
             
             X_dl = np.copy(X_full)
-            target_feats = len(_dl_scaler.mean_) if hasattr(_dl_scaler, 'mean_') else 34
+            # The DL V1 model always expects 19 features (FEATURE_NAMES)
+            target_feats = len(_dl_scaler.mean_) if hasattr(_dl_scaler, 'mean_') else 19
             if X_dl.shape[1] < target_feats:
                 padding = np.zeros((1, target_feats - X_dl.shape[1]))
                 X_dl = np.hstack((X_dl, padding))
@@ -145,6 +186,25 @@ def predict_risk(feature_vector: List[float], model_type: str = "v3", issues: Li
             except AttributeError:
                 proba = [0.0, 0.0, 0.0]
                 proba[label_idx] = 1.0
+
+        elif m_type == "v4_dl":
+            global _v4_model, _v4_scaler
+            if _v4_model is None: load_v4_dl_model()
+            if _v4_model is None: continue
+
+            X_v4 = np.copy(X_full)
+            target_feats_v4 = len(_v4_scaler.mean_) if (_v4_scaler is not None and hasattr(_v4_scaler, 'mean_')) else 36
+            if X_v4.shape[1] < target_feats_v4:
+                padding = np.zeros((1, target_feats_v4 - X_v4.shape[1]))
+                X_v4 = np.hstack((X_v4, padding))
+            elif X_v4.shape[1] > target_feats_v4:
+                X_v4 = X_v4[:, :target_feats_v4]
+
+            if _v4_scaler is not None:
+                X_v4 = _v4_scaler.transform(X_v4)
+            probs = _v4_model.predict(X_v4, verbose=0)[0].tolist()
+            label_idx = int(np.argmax(probs))
+            proba = probs
 
         elif m_type == "ensemble":
             global _model

@@ -3,7 +3,17 @@
  * Handles: code editor, API calls, risk gauge, Chart.js complexity chart, Mermaid graph
  */
 
-const API_BASE = 'http://localhost:8000';
+// Dynamically determine API base URL for better cross-platform compatibility
+const API_BASE = (() => {
+  // If we're being served from the backend, use relative paths
+  if (typeof window !== 'undefined' && window.location.hostname) {
+    const protocol = window.location.protocol;
+    const hostname = window.location.hostname;
+    const port = window.location.port ? ':' + window.location.port : '';
+    return `${protocol}//${hostname}${port}`;
+  }
+  return 'http://localhost:8000';
+})();
 
 // ── State ──────────────────────────────────────────────────────────────
 let currentLanguage = 'C';
@@ -250,14 +260,32 @@ dropzone.addEventListener('drop', e => {
 dropzone.addEventListener('click', () => fileInput.click());
 
 // ── Analyze ────────────────────────────────────────────────────────────
-analyzeBtn.addEventListener('click', runAnalysis);
+console.log('🎬 IntelliReview initialized');
+console.log(`Button found: ${analyzeBtn ? 'YES' : 'NO'}`);
+if (analyzeBtn) {
+  analyzeBtn.addEventListener('click', runAnalysis);
+  console.log('✅ Analyze button listener attached');
+} else {
+  console.error('❌ Analyze button (id="analyze-btn") not found!');
+}
 $('retry-btn').addEventListener('click', runAnalysis);
 
 async function runAnalysis() {
+  console.log('🔘 Analyze button clicked');
+
   const code = codeEditor.value.trim();
-  if (!code) { showError('Please paste or upload some code first.'); return; }
+  console.log(`📝 Code captured: ${code.length} characters`);
+
+  if (!code) {
+    console.warn('⚠️ No code provided');
+    showError('Please paste or upload some code first.');
+    return;
+  }
 
   const modelType = $('model-select').value;
+  console.log(`🤖 Model selected: ${modelType}`);
+  console.log(`💬 Language: ${currentLanguage}`);
+  console.log(`🌍 API Base: ${API_BASE}`);
 
   showLoading();
 
@@ -274,24 +302,30 @@ async function runAnalysis() {
   });
 
   try {
+    console.log(`📤 Sending POST request to ${API_BASE}/api/analyze`);
     const response = await fetch(`${API_BASE}/api/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code, language: currentLanguage, model_type: modelType }),
     });
 
+    console.log(`📥 Response status: ${response.status} ${response.statusText}`);
+
     if (!response.ok) {
       const err = await response.json().catch(() => ({ detail: 'Server error' }));
+      console.error('❌ Server error:', err);
       throw new Error(err.detail || `HTTP ${response.status}`);
     }
 
     const data = await response.json();
+    console.log('✅ Analysis completed:', data);
     currentResults = data;
     await new Promise(r => setTimeout(r, 400)); // brief pause for final step
     steps[steps.length - 1].classList.add('done');
     await new Promise(r => setTimeout(r, 300));
     renderResults(data);
   } catch (err) {
+    console.error('💥 Analysis error:', err.message);
     showError(err.message || 'Could not connect to the backend. Make sure the server is running on port 8000.');
   }
 }
@@ -304,75 +338,90 @@ $('download-report-btn').addEventListener('click', () => {
   const metrics = r.metrics;
   const issues = r.issues || [];
   const suggestions = (r.suggestions && r.suggestions.suggestions) || [];
+  const modelLabel = $('model-select').options[$('model-select').selectedIndex].text
+    .replace(/[^\u0000-\u007E]/g, '').trim(); // strip emojis
 
-  let report = `================================================================
-INTELLIREVIEW — AI CODE ANALYSIS REPORT
-================================================================
-Language: ${r.language || currentLanguage}
-Model Used: ${$('model-select').options[$('model-select').selectedIndex].text}
-Time: ${new Date().toLocaleString()}
+  const SEP = '================================================================';
+  const sec = (title) => `\n${title}\n${'─'.repeat(title.length)}\n`;
 
--- RISK SCORE --
-Label: ${r.risk.label}
-Score: ${r.risk.score}/100
-Probabilities: Clean (${r.risk.probabilities.Clean}%), Moderate (${r.risk.probabilities['Moderate Risk']}%), High (${r.risk.probabilities['High Risk']}%)
-`;
+  let report = `${SEP}\nINTELLIREVIEW — AI CODE ANALYSIS REPORT\n${SEP}\n`;
+  report += `Language : ${r.language || currentLanguage}\n`;
+  report += `Model    : ${modelLabel}\n`;
+  report += `Generated: ${new Date().toLocaleString()}\n`;
 
-  if (r.risk.comparisons && Object.keys(r.risk.comparisons).length > 1) {
-    report += `\n-- MODEL COMPARISONS --\n`;
-    const names = { ensemble: 'Ensemble', dl: 'Massive CNN', v3: 'V3 Path-Sensitive' };
+  const hasComparisons = r.risk.comparisons && Object.keys(r.risk.comparisons).length > 1;
+  const MODEL_NAMES = { ensemble: 'Ensemble (LightGBM + XGBoost + ET)', dl: 'DL V1 (19-feat)', v3: 'V3 Path-Sensitive RF', v4_dl: 'V4 Dedup DL (36-feat)' };
+
+  if (hasComparisons) {
+    // ── All-Models Report: full section per model ──────────────────────
+    report += `\n${SEP}\nSECTION 1 — RISK SCORES (ALL MODELS)\n${SEP}\n`;
     for (const [mType, comp] of Object.entries(r.risk.comparisons)) {
-      report += `* ${names[mType] || mType.toUpperCase()}:\n`;
-      report += `  Label: ${comp.risk_label} | Score: ${comp.risk_score}/100\n`;
-      report += `  Probabilities: Clean (${comp.probabilities.Clean}%), Mod (${comp.probabilities['Moderate Risk']}%), High (${comp.probabilities['High Risk']}%)\n`;
+      const name = MODEL_NAMES[mType] || mType.toUpperCase();
+      report += `\n[ ${name} ]\n`;
+      report += `  Label : ${comp.risk_label}\n`;
+      report += `  Score : ${comp.risk_score}/100\n`;
+      report += `  Confidence : ${comp.confidence ?? '-'}%\n`;
+      const p = comp.probabilities || {};
+      report += `  Probabilities: Clean ${p['Clean'] ?? 0}%  |  Moderate ${p['Moderate Risk'] ?? 0}%  |  High ${p['High Risk'] ?? 0}%\n`;
+      if (comp.explanations && comp.explanations.length) {
+        report += `  Explanation: ${comp.explanations[comp.explanations.length - 1]}\n`;
+      }
     }
+  } else {
+    // ── Single Model Report ────────────────────────────────────────────
+    report += sec('RISK SCORE');
+    report += `Label : ${r.risk.label}\n`;
+    report += `Score : ${r.risk.score}/100\n`;
+    const p = r.risk.probabilities || {};
+    report += `Probabilities: Clean ${p['Clean'] ?? 0}%  |  Moderate ${p['Moderate Risk'] ?? 0}%  |  High ${p['High Risk'] ?? 0}%\n`;
   }
 
-  report += `
--- METRICS --
-Lines of Code:          ${metrics.lines_of_code}
-Number of Functions:    ${metrics.num_functions}
-Cyclomatic Complexity:  ${metrics.cyclomatic_complexity}
-Time Complexity:        ${metrics.time_complexity}
-Memory Leaks Detected:  ${metrics.memory_leak_count}
-Unsafe C Functions:     ${metrics.unsafe_function_count}
-Recursion Count:        ${metrics.recursion_count}
+  // ── Metrics (always) ────────────────────────────────────────────────
+  report += `\n${SEP}\nSECTION 2 — CODE METRICS\n${SEP}\n`;
+  report += `Lines of Code          : ${metrics.lines_of_code}\n`;
+  report += `Number of Functions    : ${metrics.num_functions}\n`;
+  report += `Cyclomatic Complexity  : ${metrics.cyclomatic_complexity}\n`;
+  report += `Time Complexity        : ${metrics.time_complexity}\n`;
+  report += `Memory Leaks Detected  : ${metrics.memory_leak_count}\n`;
+  report += `Unsafe C Functions     : ${metrics.unsafe_function_count}\n`;
+  report += `Recursion Count        : ${metrics.recursion_count}\n`;
+  report += `\nVulnerability Categories:\n`;
+  report += `  Memory & Pointers    : ${r.risk.categories?.memory || 0}\n`;
+  report += `  Data Flow (SSA)      : ${r.risk.categories?.data_flow || 0}\n`;
+  report += `  Architecture/Smells  : ${r.risk.categories?.architecture || 0}\n`;
+  report += `  Recursion Hazards    : ${r.risk.categories?.recursion || 0}\n`;
 
--- VULNERABILITY CATEGORIES --
-Memory & Pointers:      ${r.risk.categories?.memory || 0}
-Data Flow (SSA):        ${r.risk.categories?.data_flow || 0}
-Architecture/Smells:    ${r.risk.categories?.architecture || 0}
-Recursion Hazards:      ${r.risk.categories?.recursion || 0}
-
--- ISSUES DETECTED (${issues.length}) --\n`;
-
+  // ── Issues (always) ─────────────────────────────────────────────────
+  report += `\n${SEP}\nSECTION 3 — ISSUES DETECTED (${issues.length})\n${SEP}\n`;
   if (issues.length === 0) {
-    report += "✅ No issues detected.\n";
+    report += 'No issues detected.\n';
   } else {
-    issues.forEach((i, idx) => {
-      report += `[${idx + 1}] SEVERITY: ${i.severity}\n`;
-      if (i.line) report += `    Line: ${i.line}\n`;
-      if (i.type) report += `    Type: ${i.type}\n`;
-      report += `    Message: ${i.message}\n`;
-      if (i.suggestion) report += `    Fix: ${i.suggestion}\n`;
-      report += "\n";
+    issues.forEach((iss, idx) => {
+      report += `\n[${idx + 1}] SEVERITY : ${iss.severity}\n`;
+      if (iss.line) report += `    Line    : ${iss.line}\n`;
+      if (iss.type) report += `    Type    : ${iss.type}\n`;
+      report += `    Message : ${iss.message}\n`;
+      if (iss.suggestion) report += `    Fix     : ${iss.suggestion}\n`;
     });
   }
 
-  report += `-- SUGGESTIONS (${suggestions.length}) --\n`;
+  // ── Suggestions (always) ────────────────────────────────────────────
+  report += `\n${SEP}\nSECTION 4 — IMPROVEMENT SUGGESTIONS (${suggestions.length})\n${SEP}\n`;
   if (suggestions.length === 0) {
-    report += "✅ No suggestions.\n";
+    report += 'No suggestions.\n';
   } else {
     suggestions.forEach((s, idx) => {
-      report += `[${idx + 1}] ${s.category} (${s.severity})\n`;
-      report += `    Message: ${s.message}\n`;
-      report += `    Suggestion: ${s.suggestion}\n`;
-      if (s.example) report += `    Example:\n${s.example.split('\\n').map(l => '      ' + l).join('\\n')}\n`;
-      report += "\n";
+      report += `\n[${idx + 1}] ${s.category} (${s.severity})\n`;
+      report += `    Message    : ${s.message}\n`;
+      report += `    Suggestion : ${s.suggestion}\n`;
+      if (s.example) {
+        report += `    Example:\n`;
+        s.example.split('\n').forEach(l => { report += `      ${l}\n`; });
+      }
     });
   }
 
-  // Trigger file download
+  // ── Trigger download ────────────────────────────────────────────────
   const blob = new Blob([report], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -391,7 +440,7 @@ function showLoading() {
   resultsContent.classList.add('hidden');
   loadingState.classList.remove('hidden');
   analyzeBtn.classList.add('loading');
-  $('analyze-btn-text') && ($('analyze-btn-text').textContent = 'Analyzing…');
+  $('analyze-btn-text') && ($('analyze-btn-text').textContent = 'Analyzing...');
 }
 
 function showError(msg) {
@@ -401,103 +450,154 @@ function showError(msg) {
   errorState.classList.remove('hidden');
   $('error-message').textContent = msg;
   analyzeBtn.classList.remove('loading');
+  $('analyze-btn-text') && ($('analyze-btn-text').textContent = 'Analyze Code');
 }
 
 // ── Render Results ─────────────────────────────────────────────────────
 function renderResults(data) {
-  loadingState.classList.add('hidden');
-  analyzeBtn.classList.remove('loading');
-  resultsContent.classList.remove('hidden');
+  try {
+    loadingState.classList.add('hidden');
+    analyzeBtn.classList.remove('loading');
+    $('analyze-btn-text') && ($('analyze-btn-text').textContent = 'Analyze Code');
+    resultsContent.classList.remove('hidden');
 
-  const { metrics, risk, issues, suggestions, function_complexity, functions, cfgs } = data;
+    if (!data) { showError('Invalid response from server'); return; }
 
-  // Risk Gauge & Confidence
-  renderGauge(risk.score, risk.label);
-  $('proba-clean').textContent = risk.probabilities['Clean'] + '%';
-  $('proba-moderate').textContent = risk.probabilities['Moderate Risk'] + '%';
-  $('proba-high').textContent = risk.probabilities['High Risk'] + '%';
+    const { metrics = {}, risk = {}, issues = [], suggestions = {}, function_complexity = [], functions = [], cfgs = [] } = data;
 
-  // Inject Generation 4 ML Confidence Penalty Output
+    // ── ML Panel (gauge + probabilities + confidence) ─────────────────
+    renderMLPanel(risk);
+
+    // ── Model Switcher (Compare All mode) ─────────────────────────────
+    const switcher = $('model-switcher');
+    const compCard = $('comparison-card');
+    const hasComparisons = risk.comparisons && Object.keys(risk.comparisons).length > 1;
+
+    if (hasComparisons) {
+      switcher.classList.remove('hidden');
+      compCard && (compCard.style.display = 'none'); // hide old mini-card
+      renderModelSwitcher(risk.comparisons, risk);
+    } else {
+      switcher.classList.add('hidden');
+      compCard && (compCard.style.display = 'none');
+    }
+
+    // ── Metrics ───────────────────────────────────────────────────────
+    $('m-loc').textContent = metrics.lines_of_code;
+    $('m-cc').textContent = metrics.cyclomatic_complexity;
+    $('m-time').textContent = metrics.time_complexity;
+    $('m-fn').textContent = metrics.num_functions;
+    $('m-leak').textContent = metrics.memory_leak_count;
+    $('m-unsafe').textContent = metrics.unsafe_function_count;
+
+    if (metrics.memory_leak_count > 0) $('metric-leak').classList.add('warn');
+    if (metrics.unsafe_function_count > 0) $('metric-unsafe').classList.add('warn');
+
+    // ── Issues ────────────────────────────────────────────────────────
+    try { renderIssues(issues || []); $('tab-count-issues').textContent = (issues || []).length; }
+    catch (e) { console.error('Issues render error:', e); }
+
+    // ── Suggestions ───────────────────────────────────────────────────
+    try {
+      const sugs = (suggestions && suggestions.suggestions) || [];
+      renderSuggestions(sugs);
+      $('tab-count-suggestions').textContent = sugs.length;
+    } catch (e) { console.error('Suggestions render error:', e); }
+
+    // ── Complexity Chart ──────────────────────────────────────────────
+    try { renderComplexityChart(function_complexity || []); }
+    catch (e) { console.error('Complexity render error:', e); }
+
+    // ── Functions & CFG ───────────────────────────────────────────────
+    try { renderFunctions(functions || [], function_complexity || [], cfgs || []); }
+    catch (e) { console.error('Functions render error:', e); }
+
+  } catch (e) {
+    console.error('Error rendering results:', e);
+    showError(`Rendering error: ${e.message}`);
+  }
+}
+
+// ── ML Panel: Gauge + Proba + Confidence ──────────────────────────────────
+function renderMLPanel(riskObj) {
+  renderGauge(riskObj.score || riskObj.risk_score || 0, riskObj.label || riskObj.risk_label || 'Unknown');
+
+  const proba = riskObj.probabilities || {};
+  $('proba-clean').textContent = (proba['Clean'] ?? 0) + '%';
+  $('proba-moderate').textContent = (proba['Moderate Risk'] ?? 0) + '%';
+  $('proba-high').textContent = (proba['High Risk'] ?? 0) + '%';
+
   if ($('confidence-score')) {
-    const conf = risk.confidence || 0;
+    const conf = riskObj.confidence || 0;
     $('confidence-score').textContent = conf + '%';
-
-    // Pick the most severe/top explanation for the UI
-    const exList = risk.explanations || [];
+    const exList = riskObj.explanations || [];
     $('confidence-explain').textContent = exList.length > 0
       ? exList[exList.length - 1]
-      : "Prediction bounds aligned successfully.";
+      : 'Prediction bounds aligned successfully.';
 
-    // Style penalty text if hard override
-    if (conf === 100 && risk.label === "High Risk") {
-      $('confidence-explain').style.color = "var(--clr-high)";
+    if (conf === 100 && (riskObj.label || riskObj.risk_label) === 'High Risk') {
+      $('confidence-explain').style.color = 'var(--clr-high)';
     } else if (conf < 70) {
-      $('confidence-explain').style.color = "var(--clr-mod)";
+      $('confidence-explain').style.color = 'var(--clr-moderate)';
     } else {
-      $('confidence-explain').style.color = "var(--clr-text-3)";
+      $('confidence-explain').style.color = 'var(--clr-text-3)';
     }
   }
-
-  // Handle Comparisons from "All" mode
-  const compCard = $('comparison-card');
-  const compList = $('comparison-list');
-  if (compCard && compList) {
-    if (risk.comparisons && Object.keys(risk.comparisons).length > 1) {
-      compCard.style.display = 'block';
-      compList.innerHTML = '';
-      const icons = { ensemble: '🌳', dl: '🧠', v3: '🔬' };
-      const names = { ensemble: 'Ensemble RF', dl: 'Massive CNN', v3: 'V3 Path Engine' };
-
-      for (const [mType, r] of Object.entries(risk.comparisons)) {
-        const cls = r.risk_label === 'High Risk' ? 'var(--clr-high)' :
-          r.risk_label === 'Moderate Risk' ? 'var(--clr-mod)' : 'var(--clr-clean)';
-        compList.innerHTML += `
-          <div style="background: rgba(255,255,255,0.03); padding: 0.8rem; border-radius: 0.5rem; display: flex; justify-content: space-between; align-items: center;">
-            <div style="display: flex; align-items: center; gap: 0.8rem;">
-              <span style="font-size: 1.5rem;">${icons[mType] || '⚙️'}</span>
-              <div>
-                <div style="font-size: 0.85rem; color: var(--clr-text-3); text-transform: uppercase; letter-spacing: 0.5px;">${names[mType] || mType}</div>
-                <div style="font-weight: 600;">Score: ${r.risk_score}/100</div>
-              </div>
-            </div>
-            <div style="font-weight: 700; color: ${cls}; background: ${cls}22; padding: 0.3rem 0.6rem; border-radius: 4px; font-size: 0.8rem;">
-              ${r.risk_label}
-            </div>
-          </div>
-        `;
-      }
-    } else {
-      compCard.style.display = 'none';
-    }
-  }
-
-  // Metrics
-  $('m-loc').textContent = metrics.lines_of_code;
-  $('m-cc').textContent = metrics.cyclomatic_complexity;
-  $('m-time').textContent = metrics.time_complexity;
-  $('m-fn').textContent = metrics.num_functions;
-  $('m-leak').textContent = metrics.memory_leak_count;
-  $('m-unsafe').textContent = metrics.unsafe_function_count;
-
-  // Warn on bad metrics
-  if (metrics.memory_leak_count > 0) $('metric-leak').classList.add('warn');
-  if (metrics.unsafe_function_count > 0) $('metric-unsafe').classList.add('warn');
-
-  // Issues
-  renderIssues(issues || []);
-  $('tab-count-issues').textContent = (issues || []).length;
-
-  // Suggestions
-  const sugs = (suggestions && suggestions.suggestions) || [];
-  renderSuggestions(sugs);
-  $('tab-count-suggestions').textContent = sugs.length;
-
-  // Complexity Chart
-  renderComplexityChart(function_complexity || []);
-
-  // Functions & CFG Graph
-  renderFunctions(functions || [], function_complexity || [], cfgs || []);
 }
+
+// ── Model Switcher: wire up 4 buttons in Compare All mode ─────────────────
+const MODEL_META = {
+  v3: { icon: '🔬', name: 'V3 Path-Sensitive' },
+  dl: { icon: '🧠', name: 'DL V1' },
+  ensemble: { icon: '🌳', name: 'Ensemble' },
+  v4_dl: { icon: '🔗', name: 'V4 Dedup DL' },
+};
+
+function renderModelSwitcher(comparisons, primaryRisk) {
+  const switcherBtns = document.querySelectorAll('.model-switch-btn');
+
+  // Mark unavailable buttons (model wasn't in comparisons)
+  switcherBtns.forEach(btn => {
+    const m = btn.dataset.model;
+    if (!comparisons[m]) {
+      btn.classList.add('unavailable');
+      btn.title = 'Model unavailable (not trained or failed to load)';
+    } else {
+      btn.classList.remove('unavailable');
+      btn.title = '';
+    }
+  });
+
+  // Determine first available model to pre-select
+  const available = Object.keys(comparisons);
+  const firstModel = ['v3', 'dl', 'ensemble', 'v4_dl'].find(m => available.includes(m)) || available[0];
+
+  // Pre-activate first button and display its panel
+  switcherBtns.forEach(btn => {
+    const m = btn.dataset.model;
+    btn.classList.toggle('active', m === firstModel);
+  });
+  if (comparisons[firstModel]) renderMLPanel(comparisons[firstModel]);
+
+  // Click handlers
+  switcherBtns.forEach(btn => {
+    // Clone to remove old listeners
+    const fresh = btn.cloneNode(true);
+    btn.parentNode.replaceChild(fresh, btn);
+
+    fresh.addEventListener('click', () => {
+      const m = fresh.dataset.model;
+      if (fresh.classList.contains('unavailable')) return;
+
+      document.querySelectorAll('.model-switch-btn').forEach(b => b.classList.remove('active'));
+      fresh.classList.add('active');
+
+      // Swap the ML panel to show this model's data
+      renderMLPanel(comparisons[m]);
+    });
+  });
+}
+
 
 // ── Gauge (SVG arc) ────────────────────────────────────────────────────
 function renderGauge(score, label) {
@@ -625,15 +725,20 @@ function renderComplexityChart(funcComplexity) {
 
   if (complexityChart) { complexityChart.destroy(); complexityChart = null; }
 
-  if (!funcComplexity.length) return;
+  if (!funcComplexity || !Array.isArray(funcComplexity) || !funcComplexity.length) return;
 
-  const labels = funcComplexity.map(f => f.function || '__global__');
-  const values = funcComplexity.map(f => f.cyclomatic_complexity || 1);
+  const labels = funcComplexity.map(f => f.function || f.name || '__global__').filter(Boolean);
+  const values = funcComplexity.map(f => Math.max(1, f.cyclomatic_complexity || 1));
   const colors = values.map(v =>
     v <= 5 ? 'rgba(99,102,241,0.8)' :
       v <= 10 ? 'rgba(245,158,11,0.8)' :
         'rgba(239,68,68,0.8)'
   );
+
+  if (!labels.length || !values.length) {
+    ctx.canvas.parentElement.innerHTML = '<div style="color:var(--clr-text-3);text-align:center;padding:2rem;">No complexity data available.</div>';
+    return;
+  }
 
   complexityChart = new Chart(ctx, {
     type: 'bar',
@@ -643,7 +748,7 @@ function renderComplexityChart(funcComplexity) {
         label: 'Cyclomatic Complexity',
         data: values,
         backgroundColor: colors,
-        borderColor: colors.map(c => c.replace('0.8', '1')),
+        borderColor: colors.filter(c => c).map(c => c ? c.replace('0.8', '1') : 'rgba(255,255,255,1)'),
         borderWidth: 1.5,
         borderRadius: 6,
       }],
@@ -683,19 +788,25 @@ function renderFunctions(functions, funcComplexity, cfgs) {
   list.innerHTML = '';
 
   const ccMap = {};
-  funcComplexity.forEach(f => ccMap[f.function] = f.cyclomatic_complexity);
+  if (Array.isArray(funcComplexity)) {
+    funcComplexity.forEach(f => {
+      if (f && f.function) ccMap[f.function] = f.cyclomatic_complexity || 1;
+      if (f && f.name) ccMap[f.name] = f.cyclomatic_complexity || 1;
+    });
+  }
 
-  if (functions.length === 0) {
+  if (!functions || functions.length === 0) {
     list.innerHTML = '<div style="color:var(--clr-text-3);font-size:.85rem;">No functions detected.</div>';
   } else {
     functions.forEach(fn => {
+      if (!fn || !fn.name) return; // Skip invalid entries
       const cc = ccMap[fn.name] || 1;
       const ccClass = cc <= 5 ? 'fn-cc-low' : cc <= 10 ? 'fn-cc-mod' : 'fn-cc-high';
       const chip = document.createElement('div');
       chip.className = 'fn-chip';
       chip.innerHTML = `
         <span class="fn-name">${escHtml(fn.name)}()</span>
-        <span class="fn-line">L${fn.line}</span>
+        <span class="fn-line">L${fn.line || 'N/A'}</span>
         <span class="fn-cc-badge ${ccClass}">CC:${cc}</span>`;
       list.appendChild(chip);
     });
@@ -713,7 +824,10 @@ function renderMermaidGraph(functions, cfgs) {
     return;
   }
 
-  const safeName = n => n.replace(/[^a-zA-Z0-9_]/g, '_');
+  const safeName = n => {
+    if (!n || typeof n !== 'string') return '_unknown_';
+    return n.replace(/[^a-zA-Z0-9_]/g, '_');
+  };
   let graph = 'graph LR\n';
 
   // If we have actual CFG generation data from the V3 backend:

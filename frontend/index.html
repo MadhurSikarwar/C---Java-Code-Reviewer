@@ -57,7 +57,7 @@
         </div>
       </a>
       <nav class="header-nav">
-        <span class="badge badge-version">v1.0</span>
+        <span class="badge badge-version">v4.0</span>
         <span class="badge badge-ai">ML Powered</span>
       </nav>
     </div>
@@ -66,32 +66,45 @@
   <!-- Model Info Navbar -->
   <div class="model-info-nav">
     <div class="nav-content">
-      <a href="model-dl.html" class="model-info-card link-card"
-        style="text-decoration: none; cursor: pointer; transition: transform 0.2s, background 0.2s;">
-        <span class="model-icon">🧠</span>
-        <div style="color: var(--clr-text-1);">
-          <h4>Deep Learning CNN</h4>
-          <p style="color: var(--clr-text-3);">99.1% Accuracy • ~160M Parameters</p>
+      <a href="model-dl.html" class="model-info-card link-card" style="text-decoration: none;">
+        <span class="model-icon">DL</span>
+        <div style="color: var(--clr-text);">
+          <h4>DL V1 &mdash; 19 Features</h4>
+          <p style="color: var(--clr-text-3);">91.3% Accuracy &bull; 100k Params &bull; 0.6 MB</p>
         </div>
       </a>
       <div class="nav-divider"></div>
-      <a href="model-v3.html" class="model-info-card link-card" id="v3-info-card"
-        style="text-decoration: none; cursor: pointer; transition: transform 0.2s, background 0.2s;">
-        <span class="model-icon">🔬</span>
-        <div style="color: var(--clr-text-1);">
-          <h4>V3 Path-Sensitive</h4>
-          <p style="color: var(--clr-text-3);">87.7% Accuracy • 34 Features</p>
+      <a href="model-v3.html" class="model-info-card link-card" id="v3-info-card" style="text-decoration: none;">
+        <span class="model-icon">V3</span>
+        <div style="color: var(--clr-text);">
+          <h4>V3 Path-Sensitive RF</h4>
+          <p style="color: var(--clr-text-3);">87.7% Accuracy &bull; 34 Features &bull; 23 MB</p>
+        </div>
+      </a>
+      <div class="nav-divider"></div>
+      <a href="model-ensemble.html" class="model-info-card link-card" style="text-decoration: none;">
+        <span class="model-icon">EN</span>
+        <div style="color: var(--clr-text);">
+          <h4>Ensemble Stacking</h4>
+          <p style="color: var(--clr-text-3);">LightGBM + XGBoost + ET &bull; 19 Features</p>
+        </div>
+      </a>
+      <div class="nav-divider"></div>
+      <a href="model-v4dl.html" class="model-info-card link-card" style="text-decoration: none;">
+        <span class="model-icon">V4</span>
+        <div style="color: var(--clr-text);">
+          <h4>V4 Dedup DL</h4>
+          <p style="color: var(--clr-text-3);">36 Features &bull; Path-Occurrence Aware</p>
         </div>
       </a>
       <div class="nav-divider"></div>
       <div class="model-info-card server-status-card">
-        <span class="model-icon">⚙️</span>
+        <span class="model-icon">API</span>
         <div>
           <h4>Backend Status</h4>
           <p class="server-status"
             style="font-size: 0.8rem; font-weight: 600; color: var(--clr-clean); margin-top: 2px;">
-            🟢 Connected &
-            Hot-loaded</p>
+            Connected &amp; Hot-loaded</p>
         </div>
       </div>
     </div>
@@ -104,14 +117,16 @@
       <div class="panel-header"
         style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
         <h2 class="panel-title">
-          <span class="icon">📄</span> Source Code
+          <span class="icon">&#9679;</span> Source Code
         </h2>
         <div style="display: flex; gap: 1rem; align-items: center;">
           <div class="model-select-wrapper">
             <select id="model-select" class="model-select">
-              <option value="dl">🧠 Deep Learning (Massive)</option>
-              <option value="v3" selected>🔬 V3 Path-Sensitive (Advanced)</option>
-              <option value="all">📊 Compare All Models</option>
+              <option value="v3">V3 Path-Sensitive RF (34 feat)</option>
+              <option value="dl">DL V1 &mdash; 19 Features (91.3%)</option>
+              <option value="ensemble">Ensemble (LightGBM + XGBoost + ET)</option>
+              <option value="v4_dl">V4 Dedup DL (36 feat)</option>
+              <option value="all">Compare All 4 Models</option>
             </select>
           </div>
           <div class="lang-toggle" id="lang-toggle">
@@ -144,8 +159,8 @@
             Code Editor
           </span>
           <div class="editor-actions">
-            <button class="editor-action-btn" id="btn-clear" title="Clear Editor">✕ Clear</button>
-            <button class="editor-action-btn" id="btn-sample" title="Load Sample">📋 Sample</button>
+            <button class="editor-action-btn" id="btn-clear" title="Clear Editor">Clear</button>
+            <button class="editor-action-btn" id="btn-sample" title="Load Sample">Load Sample</button>
           </div>
         </div>
         <div class="editor-scroll-wrap">
@@ -161,8 +176,7 @@
 
       <!-- Analyze Button -->
       <button class="analyze-btn" id="analyze-btn">
-        <span class="analyze-btn-icon">⚡</span>
-        <span class="analyze-btn-text">Analyze Code</span>
+        <span class="analyze-btn-text" id="analyze-btn-text">Analyze Code</span>
         <div class="analyze-btn-shine"></div>
       </button>
     </section>
@@ -196,10 +210,10 @@
         <p>Paste your C or Java code and click <strong>Analyze Code</strong> to get AI-powered insights, risk scores,
           and improvement suggestions.</p>
         <div class="feature-pills">
-          <span class="pill">🧠 ML Risk Score</span>
-          <span class="pill">🔍 Memory Leaks</span>
-          <span class="pill">⚡ Complexity</span>
-          <span class="pill">🛡 Security</span>
+          <span class="pill">ML Risk Score</span>
+          <span class="pill">Memory Leaks</span>
+          <span class="pill">Complexity</span>
+          <span class="pill">Security</span>
         </div>
       </div>
 
@@ -207,10 +221,10 @@
       <div class="loading-state hidden" id="loading-state">
         <div class="loader-ring"></div>
         <div class="loader-steps" id="loader-steps">
-          <div class="loader-step active" data-step="parse">📄 Parsing AST…</div>
-          <div class="loader-step" data-step="analyze">🔬 Running analysis…</div>
-          <div class="loader-step" data-step="ml">🧠 ML classification…</div>
-          <div class="loader-step" data-step="suggest">💡 Generating suggestions…</div>
+          <div class="loader-step active" data-step="parse">Parsing AST...</div>
+          <div class="loader-step" data-step="analyze">Running analysis...</div>
+          <div class="loader-step" data-step="ml">ML classification...</div>
+          <div class="loader-step" data-step="suggest">Generating suggestions...</div>
         </div>
       </div>
 
@@ -220,8 +234,19 @@
         <div class="results-top-header">
           <h3 style="font-size: 1.1rem; font-weight: 600;">Analysis Results</h3>
           <button class="download-btn" id="download-report-btn">
-            ↓ Download Full Report
+            Download Full Report
           </button>
+        </div>
+
+        <!-- Model Switcher — shown only in Compare All mode -->
+        <div class="model-switcher hidden" id="model-switcher">
+          <span class="switcher-label">Viewing model:</span>
+          <div class="switcher-buttons" id="switcher-buttons">
+            <button class="model-switch-btn active" data-model="v3" id="msw-v3">V3 Path-Sensitive</button>
+            <button class="model-switch-btn" data-model="dl" id="msw-dl">DL V1</button>
+            <button class="model-switch-btn" data-model="ensemble" id="msw-ensemble">Ensemble</button>
+            <button class="model-switch-btn" data-model="v4_dl" id="msw-v4_dl">V4 Dedup DL</button>
+          </div>
         </div>
 
         <div class="results-top">
@@ -302,7 +327,7 @@
           <div class="comparison-card glass-card hidden" id="comparison-card"
             style="flex: 1; padding: 1.5rem; min-width: 300px; display: none;">
             <h4 style="margin-bottom: 1rem; color: var(--clr-text-2); display: flex; align-items: center; gap: 0.5rem;">
-              <span class="icon">📊</span> Model Comparison
+              Model Comparison
             </h4>
             <div id="comparison-list" style="display: flex; flex-direction: column; gap: 0.8rem;"></div>
           </div>
@@ -310,12 +335,12 @@
 
         <!-- Tab Navigation -->
         <div class="tabs-nav" id="tabs-nav">
-          <button class="tab-btn active" data-tab="issues">🐛 Issues <span class="tab-count"
+          <button class="tab-btn active" data-tab="issues">Issues <span class="tab-count"
               id="tab-count-issues">0</span></button>
-          <button class="tab-btn" data-tab="suggestions">💡 Suggestions <span class="tab-count"
+          <button class="tab-btn" data-tab="suggestions">Suggestions <span class="tab-count"
               id="tab-count-suggestions">0</span></button>
-          <button class="tab-btn" data-tab="complexity">📊 Complexity</button>
-          <button class="tab-btn" data-tab="functions">🔧 Functions</button>
+          <button class="tab-btn" data-tab="complexity">Complexity</button>
+          <button class="tab-btn" data-tab="functions">Functions</button>
         </div>
 
         <!-- Tab Panels -->
@@ -324,10 +349,10 @@
           <div class="tab-panel active" id="tab-issues">
             <div class="issues-filter">
               <button class="filter-btn active" data-sev="ALL">All</button>
-              <button class="filter-btn" data-sev="CRITICAL">🔴 Critical</button>
-              <button class="filter-btn" data-sev="HIGH">🟠 High</button>
-              <button class="filter-btn" data-sev="MEDIUM">🟡 Medium</button>
-              <button class="filter-btn" data-sev="LOW">🟢 Low</button>
+              <button class="filter-btn" data-sev="CRITICAL">Critical</button>
+              <button class="filter-btn" data-sev="HIGH">High</button>
+              <button class="filter-btn" data-sev="MEDIUM">Medium</button>
+              <button class="filter-btn" data-sev="LOW">Low</button>
             </div>
             <div class="issues-list" id="issues-list">
               <div class="no-issues-msg hidden" id="no-issues-msg">

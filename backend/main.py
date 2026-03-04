@@ -4,16 +4,34 @@ IntelliReview — FastAPI Entry Point
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from contextlib import asynccontextmanager
 import os
 
 from config import API_TITLE, API_VERSION, API_DESCRIPTION, CORS_ORIGINS
 from routes.analyze import router as analyze_router
 from routes.health import router as health_router
 
+
+# Lifespan event handler for model loading
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle - load model on startup."""
+    # Startup: Load the ML model
+    from ml.predict import load_model
+    load_model()
+    print("✅ IntelliReview API ready — model loaded.")
+    
+    yield  # Application runs here
+    
+    # Shutdown: Cleanup if needed
+    print("🛑 IntelliReview API shutting down.")
+
+
 app = FastAPI(
     title=API_TITLE,
     version=API_VERSION,
     description=API_DESCRIPTION,
+    lifespan=lifespan,
 )
 
 # CORS — allow file:// and localhost origins for frontend
@@ -37,14 +55,6 @@ if os.path.exists(frontend_path):
     app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 else:
     print(f"⚠️ Warning: Frontend directory not found at {frontend_path}")
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Pre-warm the ML model on startup."""
-    from ml.predict import load_model
-    load_model()
-    print("✅ IntelliReview API ready — model loaded.")
 
 
 if __name__ == "__main__":

@@ -4,106 +4,18 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>IntelliReview — Deep Learning CNN</title>
+    <title>IntelliReview &mdash; DL V1 Deep Learning Model</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
         rel="stylesheet" />
     <link rel="stylesheet" href="style.css" />
-    <style>
-        .model-container {
-            max-width: 900px;
-            margin: 4rem auto;
-            padding: 2rem;
-        }
-
-        .model-header {
-            text-align: center;
-            margin-bottom: 3rem;
-        }
-
-        .model-header h1 {
-            font-size: 3rem;
-            color: var(--clr-text-1);
-            margin-bottom: 1rem;
-        }
-
-        .model-header p {
-            font-size: 1.2rem;
-            color: var(--clr-text-3);
-        }
-
-        .btn-back {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            color: var(--clr-text-2);
-            padding: 0.6rem 1.2rem;
-            border-radius: 6px;
-            text-decoration: none;
-            transition: 0.2s;
-            font-weight: 500;
-            margin-bottom: 2rem;
-        }
-
-        .btn-back:hover {
-            background: rgba(255, 255, 255, 0.1);
-            color: var(--clr-text-1);
-        }
-
-        .content-card {
-            background: var(--clr-surface-dim);
-            border: 1px solid var(--clr-border);
-            border-radius: 12px;
-            padding: 2.5rem;
-            margin-bottom: 2rem;
-        }
-
-        .content-card h2 {
-            color: var(--clr-primary);
-            margin-bottom: 1rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            padding-bottom: 0.5rem;
-        }
-
-        .content-card p {
-            line-height: 1.7;
-            color: var(--clr-text-2);
-            margin-bottom: 1rem;
-            font-size: 1.05rem;
-        }
-
-        .content-card ul {
-            list-style: disk;
-            padding-left: 1.5rem;
-            margin-bottom: 1rem;
-            color: var(--clr-text-2);
-        }
-
-        .content-card li {
-            margin-bottom: 0.5rem;
-            line-height: 1.6;
-        }
-
-        .badge-stat {
-            display: inline-block;
-            background: var(--clr-primary);
-            color: white;
-            padding: 0.2rem 0.6rem;
-            border-radius: 4px;
-            font-weight: 600;
-            font-size: 0.9rem;
-            margin-right: 0.5rem;
-        }
-    </style>
 </head>
 
-<body>
+<body class="dl-theme">
     <div class="bg-gradient"
-        style="background: radial-gradient(circle at 50% 10%, #4c1d95 0%, #0f172a 40%, #000 100%);"></div>
+        style="background: radial-gradient(circle at 50% 10%, rgba(99,102,241,0.2) 0%, #0f172a 45%, #000 100%);"></div>
     <div class="bg-orbs">
         <div class="orb orb-1"></div>
         <div class="orb orb-2"></div>
@@ -118,18 +30,10 @@
                         <path d="M8 6L4 16L8 26" stroke="url(#g1)" stroke-width="2.5" stroke-linecap="round" />
                         <path d="M24 6L28 16L24 26" stroke="url(#g1)" stroke-width="2.5" stroke-linecap="round" />
                         <circle cx="16" cy="16" r="3" fill="url(#g1)" />
-                        <path d="M13 10L19 22" stroke="url(#g2)" stroke-width="1.5" stroke-linecap="round"
-                            opacity="0.6" />
-                        <path d="M19 10L13 22" stroke="url(#g2)" stroke-width="1.5" stroke-linecap="round"
-                            opacity="0.6" />
                         <defs>
                             <linearGradient id="g1" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
                                 <stop stop-color="#6366f1" />
                                 <stop offset="1" stop-color="#8b5cf6" />
-                            </linearGradient>
-                            <linearGradient id="g2" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-                                <stop stop-color="#06b6d4" />
-                                <stop offset="1" stop-color="#6366f1" />
                             </linearGradient>
                         </defs>
                     </svg>
@@ -143,49 +47,114 @@
     </header>
 
     <main class="model-container">
-        <a href="index.html" class="btn-back">← Back to Dashboard</a>
+        <a href="index.html" class="btn-back">&#8592; Back to Dashboard</a>
 
         <div class="model-header">
-            <span style="font-size: 4rem;">🧠</span>
-            <h1>Massive Deep Learning Engine</h1>
-            <p>A colossal ~160 Million Parameter deep neural architecture utilizing GPU-accelerated Mixed Precision
-                training.</p>
+            <div class="model-badge">DL &mdash; DEEP LEARNING V1</div>
+            <h1>DL V1 &mdash; 19-Feature Neural Classifier</h1>
+            <p>A compact, high-accuracy deep neural network trained on 19 static analysis features achieving 91.3%
+                classification accuracy at just 0.6 MB on disk.</p>
         </div>
 
-        <div class="content-card glass-card">
+        <div class="model-spec-card">
             <h2>Technical Specifications</h2>
-            <p><span class="badge-stat">Accuracy:</span> <strong>99.1%</strong> highly confident telemetry scaling</p>
-            <p><span class="badge-stat">Parameters:</span> <strong>~160,000,000</strong></p>
-            <p><span class="badge-stat">Disk Weight:</span> <strong>~2.3 GB</strong></p>
-            <p><span class="badge-stat">Input Dimensions:</span> <strong>34 Features</strong> (C and Java Telemetry
-                Stack)</p>
+            <div class="stat-grid">
+                <div class="stat-item">
+                    <div class="stat-label">Accuracy</div>
+                    <div class="stat-value">91.3%</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Parameters</div>
+                    <div class="stat-value">~100,000</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Disk Size</div>
+                    <div class="stat-value">0.6 MB</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Input Features</div>
+                    <div class="stat-value">19</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Output Classes</div>
+                    <div class="stat-value">3</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Framework</div>
+                    <div class="stat-value">Keras / TF</div>
+                </div>
+            </div>
+        </div>
 
-            <h2 style="margin-top: 2rem;">Architectural Breakdown</h2>
-            <p>
-                The Deep Learning CNN is IntelliReview's most aggressive pattern-matching system. Designed atop the
-                Keras TensorFlow suite, it extracts 34 raw data flow points, paths, and memory markers, mapping them
-                directly into a deep dense network specifically crafted to over-engineer complex threat analysis.
-            </p>
-            <p>
-                <strong>Layer Architecture comprises:</strong>
-            </p>
+        <div class="model-spec-card">
+            <h2>Network Architecture</h2>
+            <p>DL V1 uses a slim, well-regularised dense architecture that avoids overparameterisation while maintaining
+                strong generalisation:</p>
+            <div class="layer-row">
+                <span class="layer-box">Input (19)</span>
+                <span class="layer-arrow">&#8594;</span>
+                <span class="layer-box">Dense 256 + BatchNorm + ReLU + Drop 0.35</span>
+                <span class="layer-arrow">&#8594;</span>
+                <span class="layer-box">Dense 128 + BatchNorm + ReLU + Drop 0.3</span>
+                <span class="layer-arrow">&#8594;</span>
+                <span class="layer-box">Dense 64 + ReLU</span>
+                <span class="layer-arrow">&#8594;</span>
+                <span class="layer-box">Output 3 (Softmax)</span>
+            </div>
+            <p style="margin-top:1rem;">The model uses <strong>BatchNormalization</strong> after each wide layer to
+                standardise activations and speed up convergence. <strong>Dropout</strong> at 30&ndash;35% prevents
+                overfitting on the 19-feature structured input space. The final Softmax layer outputs per-class
+                probabilities for Clean, Moderate Risk, and High Risk.</p>
+        </div>
+
+        <div class="model-spec-card">
+            <h2>Training Data</h2>
+            <p>DL V1 is trained on a combination of real benchmark data and augmented synthetic samples:</p>
             <ul>
-                <li><strong>Wide Expansion Gate:</strong> 4096 Neurons utilizing ReLu and Batch Normalization.</li>
-                <li><strong>Mega Dense Blocks:</strong> Triple stacked 8192-width dense layers crunching cross-language
-                    semantic dependencies.</li>
-                <li><strong>Mixed Precision Computation:</strong> To fit the 160M parameters effectively onto consumer
-                    GPU VRAM, it leverages `mixed_float16` policies.</li>
-                <li><strong>Compression Core:</strong> Reducer mechanism resolving down to 1024 parameters and applying
-                    Softmax probabilistic scoring.</li>
+                <li><strong>juliet_data.csv</strong> &mdash; C vulnerability samples from the NSA Juliet Test Suite
+                    covering CWE classes (buffer overflow, use-after-free, format string, etc.).</li>
+                <li><strong>juliet_java_data.csv</strong> &mdash; Java-adapted Juliet samples.</li>
+                <li><strong>real_data.csv</strong> &mdash; Hand-labelled real-world C/Java code snippets.</li>
+                <li><strong>Synthetic augmentation</strong> &mdash; Gaussian-perturbed samples generated around class
+                    centroids to balance the Clean / Moderate / High Risk ratio before training.</li>
             </ul>
+            <p>The combined dataset is passed through a <strong>StandardScaler</strong> (saved alongside the model) to
+                normalise the 19-feature vector before inference.</p>
+        </div>
 
-            <h2 style="margin-top: 2rem;">Why Use The DL Engine?</h2>
-            <p>
-                Deep learning natively excels at identifying extremely opaque, non-linear relationships hidden inside
-                your codebases. For enterprise teams writing dense C code where minor pointer interactions overlap with
-                deep recursive logic, the DNN model creates mathematical "intuitions" predicting catastrophic failures
-                standard rule-sets miss entirely.
-            </p>
+        <div class="model-spec-card">
+            <h2>Feature Vector (19 Dimensions)</h2>
+            <ul>
+                <li>Lines of Code (LOC)</li>
+                <li>Number of functions</li>
+                <li>Cyclomatic complexity</li>
+                <li>Max nesting depth</li>
+                <li>Memory leak count</li>
+                <li>Unsafe C function count (gets, strcpy, sprintf, etc.)</li>
+                <li>Recursion count &amp; max recursion depth</li>
+                <li>Pointer dereference count</li>
+                <li>Use-after-free indicator</li>
+                <li>Double-free indicator</li>
+                <li>Invalid free indicator</li>
+                <li>Uninitialized variable count</li>
+                <li>Array out-of-bounds indicator</li>
+                <li>Null pointer dereference count</li>
+                <li>SSA (Static Single Assignment) data-flow issues</li>
+                <li>Code smell count</li>
+                <li>Time complexity score (numeric encoding of O(1)&ndash;O(2^N))</li>
+                <li>Number of conditionals (if/switch branches)</li>
+                <li>Language encoding (0 = C, 1 = Java)</li>
+            </ul>
+        </div>
+
+        <div class="model-spec-card">
+            <h2>Why Use DL V1?</h2>
+            <p>DL V1 is the recommended <strong>default model</strong> for most use-cases. It is compact enough to run
+                without a GPU, loads in under a second, and consistently achieves over 91% accuracy on held-out
+                validation data. Its confidence scores align well with human-labelled severity, making it ideal for
+                CI/CD pipeline integration.</p>
+            <p>For edge cases involving deeply recursive or path-dependent code, pair DL V1 with the V3 Path-Sensitive
+                RF model using <strong>Compare All</strong> mode.</p>
         </div>
     </main>
 </body>
