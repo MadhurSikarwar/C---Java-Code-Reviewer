@@ -95,14 +95,10 @@
       </div>
 
       <div class="reading hidden" id="loading-state">
-        <p class="kicker">One moment</p>
+        <p class="kicker">The engine, thinking <button type="button" class="linkbtn" id="skip-trace">skip ahead</button></p>
         <h2>Reading…</h2>
-        <ul id="loader-steps">
-          <li class="is-now">Parsing the file</li>
-          <li>Tracing pointers through each branch</li>
-          <li>Weighing the evidence</li>
-          <li>Writing it up</li>
-        </ul>
+        <p class="sub">Each line below is something the analyzer actually just did. The code on the left lights up where it is looking.</p>
+        <ol class="trace" id="trace-live"></ol>
       </div>
 
       <div class="trouble hidden" id="error-state" role="alert">
@@ -122,6 +118,7 @@
           </div>
           <p class="verdict__score"><b id="verdict-score">0</b> / 100</p>
           <p class="verdict__why" id="verdict-why"></p>
+          <p class="verdict__lean" id="verdict-lean"></p>
           <dl class="verdict__meta">
             <div><dt>Read by</dt><dd id="verdict-model">—</dd></div>
             <div><dt>Model confidence</dt><dd id="confidence-score">—</dd></div>
@@ -130,6 +127,7 @@
           <div class="verdict__actions">
             <button type="button" class="linkbtn" id="download-report-btn">Save this review as text</button>
             <button type="button" class="linkbtn" id="print-btn">Print it</button>
+            <a class="linkbtn" href="#sec-trace">How it decided ↓</a>
           </div>
         </section>
 
@@ -162,6 +160,13 @@
         <section class="block" id="sec-changes" aria-labelledby="ch-h">
           <h3 id="ch-h">Changes worth making <small id="tab-count-suggestions">0</small></h3>
           <div class="changes-list" id="suggestions-list"></div>
+        </section>
+
+        <section class="block" id="sec-trace" aria-labelledby="tr-h">
+          <h3 id="tr-h">How it decided <small>the engine’s trace</small></h3>
+          <p class="sub">Every step it took on this file, in order, with the models’ own probabilities before and after the evidence gate.
+            <button type="button" class="linkbtn" id="replay-trace">Replay it</button></p>
+          <ol class="trace" id="trace-static"></ol>
         </section>
 
         <div class="aside-note" id="analysis-notes" hidden></div>

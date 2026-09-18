@@ -16,6 +16,7 @@ const state = {
   filter: 'ALL',
   reading: false,
   timers: [],
+  trace: [],
 };
 
 const SEV = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
@@ -220,34 +221,123 @@ sheet.addEventListener('drop', e => loadFile(e.dataTransfer.files[0], true));
 const screens = ['empty-state', 'loading-state', 'error-state', 'results-content'];
 function show(id) { screens.forEach(s => $(s).classList.toggle('hidden', s !== id)); }
 
-function showReading() {
+// ─────────────────────────────────────────────────────────── the engine's trace
+// Every event here was emitted by the backend at the moment that stage finished (see pipeline.py / predict.py).
+// The analysis itself takes a fraction of a second, so the player *paces* the events to be readable; "skip ahead" removes the pacing.
+const STAGE = { parse: 'Parse', graph: 'Graph', dataflow: 'Flow', bounds: 'Bounds', taint: 'Taint', findings: 'Found',
+  numbers: 'Numbers', models: 'Model', gate: 'Gate', verdict: 'Verdict' };
+const DELAY = { step: 240, finding: 360, features: 320, model: 420, counterfactual: 320, gate: 400, verdict: 200 };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const argmaxLabel = p => Object.entries(p || {}).sort((a, b) => b[1] - a[1])[0]?.[0];
+const LEAN_TEXT = { Clean: 'Clean', Moderate: 'Moderate risk', High: 'High risk' };
+
+function probBar(p, alt) {
+  const v = ['Clean', 'Moderate', 'High'].map(k => p[k] ?? 0);
+  return `<div class="pbar${alt ? ' pbar--alt' : ''}" role="img" aria-label="Clean ${v[0]}%, Moderate ${v[1]}%, High ${v[2]}%">
+    <i class="c" style="flex:${v[0] || .01}"></i><i class="m" style="flex:${v[1] || .01}"></i><i class="h" style="flex:${v[2] || .01}"></i></div>
+    <div class="pbar__legend">Clean ${v[0]}% · Moderate ${v[1]}% · High ${v[2]}%</div>`;
+}
+
+function traceRow(e, interactive) {
+  const text = esc(e.text || '').replace(/`([^`]+)`/g, '<code>$1</code>');
+  const sev = e.severity ? String(e.severity).toLowerCase() : '';
+  let body;
+  if (e.kind === 'finding') {
+    const where = e.line ? (interactive ? `<button type="button" class="tr__where" data-goto="${e.line}">line ${e.line}</button>` : `<span class="tr__where">line ${e.line}</span>`) : '';
+    body = `<p><span class="tag sev-${sev}">${esc(SEV_LABEL[e.severity] || e.severity)}</span>${where}${text}</p>`;
+  } else if (e.kind === 'model' || e.kind === 'counterfactual') {
+    body = `<p>${text}</p>${probBar(e.probs || {}, e.kind === 'counterfactual')}`;
+  } else if (e.kind === 'features') {
+    body = `<p>${text}</p><div class="chips">${(e.features || []).map(([n, v]) => `<span class="chip">${esc(n.replace(/^v3_/, ''))}<b>${esc(v)}</b></span>`).join('')}</div>`;
+  } else {
+    body = `<p>${text}</p>`;
+  }
+  const stage = e.kind === 'counterfactual' ? 'Model' : (STAGE[e.stage] || e.stage);
+  return `<li class="tr tr--${e.kind}${sev ? ' sev-' + sev : ''}"><span class="tr__t">${e.t ?? 0}ms</span><span class="tr__stage">${esc(stage)}</span><div class="tr__body">${body}</div></li>`;
+}
+
+class TracePlayer {
+  constructor(list, { addPins }) {
+    Object.assign(this, { list, addPins, queue: [], busy: false, closed: false, skip: false, waiters: [], findingNo: 0 });
+  }
+  push(e) { this.queue.push(e); this.pump(); }
+  close() { this.closed = true; this.pump(); }
+  drained() { return new Promise(r => (this.closed && !this.busy && !this.queue.length) ? r() : this.waiters.push(r)); }
+  async pump() {
+    if (this.busy) return;
+    this.busy = true;
+    while (this.queue.length) {
+      const e = this.queue.shift();
+      this.show(e);
+      const backlog = this.queue.length;
+      await sleep(this.skip ? 0 : Math.round((DELAY[e.kind] || 240) * (backlog > 12 ? .25 : backlog > 6 ? .55 : 1)));
+    }
+    this.busy = false;
+    if (this.closed) { clearScan(); this.waiters.splice(0).forEach(r => r()); }
+  }
+  show(e) {
+    this.list.insertAdjacentHTML('beforeend', traceRow(e, !this.addPins));
+    const li = this.list.lastElementChild;
+    li.querySelectorAll('[data-goto]').forEach(b => b.addEventListener('click', () => gotoLine(+b.dataset.goto)));
+    if (!this.skip) li.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    this.light(e);
+  }
+  // the code lights up where the engine is looking; findings appear on their line as they are discovered
+  light(e) {
+    if (!e.line) return;
+    const el = $('ln-' + e.line);
+    if (!el) return;
+    clearScan();
+    el.classList.add('is-scan');
+    if (e.kind === 'finding' && this.addPins) {
+      const sv = String(e.severity).toLowerCase();
+      el.classList.add('is-flag', 'sev-' + sv);
+      el.querySelector('.ln__pin').insertAdjacentHTML('beforeend', `<span class="pin sev-${sv}"><span>${++this.findingNo}</span></span>`);
+    }
+    if (!this.skip) scrollListingTo(e.line, false);
+  }
+}
+function clearScan() { document.querySelectorAll('#listing .ln.is-scan').forEach(x => x.classList.remove('is-scan')); }
+
+function renderTrace(events) {
+  const list = $('trace-static');
+  list.innerHTML = events.map(e => traceRow(e, true)).join('');
+  list.querySelectorAll('[data-goto]').forEach(b => b.addEventListener('click', () => gotoLine(+b.dataset.goto)));
+}
+$('replay-trace').addEventListener('click', async () => {
+  if (!state.trace || !state.trace.length) return;
+  const list = $('trace-static');
+  list.innerHTML = '';
+  const p = new TracePlayer(list, { addPins: false });
+  state.trace.forEach(e => p.push(e));
+  p.close();
+  await p.drained();
+});
+
+// ─────────────────────────────────────────────────────────── screens & the request
+function showThinking(code) {
   state.reading = true;
   sheet.classList.add('is-reading');
   analyzeBtn.disabled = true;
   $('analyze-btn-text').textContent = 'Reading…';
+  enterListing(code, []);                       // the plain listing, so the engine's attention can be shown on it
+  $('trace-live').innerHTML = '';
   show('loading-state');
-  const items = [...document.querySelectorAll('#loader-steps li')];
-  items.forEach((li, i) => li.className = i === 0 ? 'is-now' : '');
-  state.timers.forEach(clearTimeout);
-  state.timers = [700, 1500, 2400].map((ms, k) => setTimeout(() => {
-    items.forEach((li, i) => li.className = i < k + 1 ? 'is-done' : i === k + 1 ? 'is-now' : '');
-  }, ms));
 }
 function doneReading() {
   state.reading = false;
-  state.timers.forEach(clearTimeout);
   sheet.classList.remove('is-reading');
   analyzeBtn.disabled = false;
   $('analyze-btn-text').textContent = state.data && !listing.classList.contains('hidden') ? 'Review again' : 'Review this code';
 }
 function showError(msg) {
   doneReading();
+  clearScan();
+  if (!listing.classList.contains('hidden')) leaveListing();
   $('error-message').textContent = msg;
   show('error-state');
 }
 $('retry-btn').addEventListener('click', runAnalysis);
-
-// ─────────────────────────────────────────────────────────── the request
 analyzeBtn.addEventListener('click', runAnalysis);
 
 async function runAnalysis() {
@@ -256,9 +346,11 @@ async function runAnalysis() {
   const code = editor.value;
   if (!code.trim()) { showError('There is nothing to review yet. Paste some code, open a file, or load an example.'); return; }
 
-  showReading();
+  showThinking(code);
+  const player = new TracePlayer($('trace-live'), { addPins: true });
+  $('skip-trace').onclick = () => { player.skip = true; };
   try {
-    const res = await fetch(`${API_BASE}/api/analyze`, {
+    const res = await fetch(`${API_BASE}/api/analyze/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code, language: state.lang, model_type: state.model }),
@@ -270,15 +362,42 @@ async function runAnalysis() {
         : err.detail;
       throw new Error(detail || `The server answered with HTTP ${res.status}.`);
     }
-    state.data = await res.json();
+    let result = null;
+    const handle = line => {
+      if (!line.trim()) return;
+      const ev = JSON.parse(line);
+      if (ev.type === 'trace') player.push(ev);
+      else if (ev.type === 'result') result = ev.data;
+      else if (ev.type === 'error') throw new Error(ev.detail);
+    };
+    if (res.body && res.body.getReader) {
+      const reader = res.body.getReader(), dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split('\n');
+        buf = parts.pop();
+        parts.forEach(handle);
+      }
+      handle(buf);
+    } else {
+      (await res.text()).split('\n').forEach(handle);
+    }
+    player.close();
+    await player.drained();
+    if (!result) throw new Error('The engine ended without an answer.');
+    await sleep(player.skip ? 0 : 450);
+    state.data = result;
     state.code = code;
-    await new Promise(r => setTimeout(r, 350));          // let the last reading step register
-    render(state.data);
+    render(result);
   } catch (err) {
-    const offline = err instanceof TypeError;
-    showError(offline ? 'The engine isn’t answering. Start it with run.bat, then try again.' : err.message);
+    player.close();
+    showError(err instanceof TypeError ? 'The engine isn’t answering. Start it with run.bat, then try again.' : err.message);
   }
 }
+
 
 // ─────────────────────────────────────────────────────────── rendering
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -310,10 +429,12 @@ function render(data) {
 
   const notes = sortedIssues(data.issues || []);
   state.notes = notes;
+  state.trace = data.trace || [];
   state.filter = 'ALL';
 
   renderVerdict(comps ? comps[state.view] : risk, notes, data);
   renderCompare(comps);
+  renderTrace(state.trace);
   renderNotes(notes);
   renderLedger(data);
   renderBars(data.function_complexity || []);
@@ -355,6 +476,16 @@ function renderVerdict(r, notes, data) {
     !/nominal variance|Raised to HIGH RISK|^Very high cyclomatic/i.test(x));
   const modelWord = extras.length ? ` <em>${esc(extras[extras.length - 1])}</em>` : '';
   $('verdict-why').innerHTML = esc(why) + modelWord;
+
+  // how much the verdict leans on the findings: the same model, asked again with the findings removed
+  const cf = (state.trace || []).find(e => e.kind === 'counterfactual' && e.model === state.view);
+  const lean = $('verdict-lean');
+  if (cf) {
+    const alone = LEAN_TEXT[argmaxLabel(cf.probs)], now = LEVEL_TEXT[level];
+    lean.innerHTML = alone === now
+      ? `On the shape of the code alone, ${esc(MODEL_SHORT[state.view] || state.view)} would say <b>${esc(alone)}</b> too. The findings agree.`
+      : `On the shape of the code alone, ${esc(MODEL_SHORT[state.view] || state.view)} would say <b>${esc(alone)}</b>. The findings moved it to <b>${esc(now)}</b>.`;
+  } else lean.textContent = '';
 }
 const list = a => a.length < 2 ? (a[0] || '') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1];
 

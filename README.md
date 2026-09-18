@@ -50,6 +50,9 @@ cd backend
 * **Suggested edits:** for findings with a mechanical, safe repair (`printf(x)` -> `printf("%s", x)`, `gets` / `strcpy` / `sprintf` on a declared array,
   MD5 -> SHA-256, empty `catch`, hard-coded credential), the UI shows the before/after line and an *Apply* button. If a fix is only correct under an
   assumption we can't verify (e.g. `sizeof(ptr)`), no edit is offered.
+* **Watch it think:** `POST /api/analyze/stream` streams newline-delimited JSON, one event per real analysis stage (parse, graph, pointers, bounds, taint,
+  findings, the 36 numbers, each model's probabilities before/after the gate, and a "structure alone" counterfactual), then the result. The UI plays them live and
+  keeps the trace in the results (`trace` in the normal `/api/analyze` response too).
 * `.github/workflows/ci.yml` runs the tests on every push.
 
 ## Retraining

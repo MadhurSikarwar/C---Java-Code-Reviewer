@@ -248,6 +248,40 @@ button, select, input, textarea { font: inherit; color: inherit; }
 .reading li.is-now { color: var(--ink); padding-left: 10px; border-left: 2px solid var(--red); }
 .reading li.is-done { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--rule-2); }
 
+/* the engine's trace ------------------------------------------------------- */
+.reading .sub { color: var(--ink-3); font-style: italic; font-size: 15px; margin: -10px 0 16px; }
+.reading .kicker .linkbtn { font-size: 14px; margin-left: 10px; text-transform: none; letter-spacing: 0; }
+.trace { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
+.tr { display: grid; grid-template-columns: 50px 64px minmax(0, 1fr); gap: 0 10px; padding: 10px 0 11px; border-bottom: 1px solid var(--rule); animation: settle .3s ease-out both; }
+.tr__t { font: 400 11px/1.9 var(--mono); color: var(--ink-3); text-align: right; }
+.tr__stage { font: 500 10.5px/1.9 var(--mono); letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); }
+.tr__body p { margin: 0; font-size: 16px; line-height: 1.45; }
+.tr__body code { font: 400 .84em var(--mono); background: var(--sheet-2); border: 1px solid var(--rule); padding: 0 .3em; }
+.tr--finding .tr__stage { color: var(--slate); }
+.tr--finding.sev-critical .tr__stage, .tr--finding.sev-high .tr__stage { color: var(--red); }
+.tr--finding.sev-medium .tr__stage { color: var(--ochre); }
+.tr--finding { background: linear-gradient(90deg, var(--sheet-2), transparent 70%); }
+.tr--finding .tag { margin-right: 8px; }
+.tr__where { font: 400 12px var(--mono); background: none; border: 0; padding: 0; cursor: pointer; color: var(--ink-2); text-decoration: underline; text-decoration-color: var(--rule-2); text-underline-offset: 3px; margin-right: 8px; }
+.tr__where:hover { text-decoration-color: var(--red); }
+.tr--gate .tr__stage { color: var(--ochre); }
+.tr--verdict p { font: italic 400 20px/1.3 var(--serif); }
+.tr--verdict .tr__stage { color: var(--ink); }
+.pbar { display: flex; gap: 2px; height: 9px; margin: 8px 0 4px; }
+.pbar i { display: block; min-width: 2px; transition: flex-grow .5s cubic-bezier(.2, .7, .2, 1); }
+.pbar .c { background: var(--moss); } .pbar .m { background: var(--ochre); } .pbar .h { background: var(--red); }
+.pbar--alt i { background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgba(250, 247, 239, .55) 3px 5px); opacity: .8; }
+.pbar__legend { font: 400 11.5px var(--mono); color: var(--ink-3); }
+.chips { display: flex; flex-wrap: wrap; gap: 5px 6px; margin-top: 8px; }
+.chip { font: 400 11.5px var(--mono); border: 1px solid var(--rule-2); padding: 1px 7px; color: var(--ink-2); }
+.chip b { font-weight: 500; color: var(--ink); margin-left: 4px; }
+.verdict__lean { margin: -6px 0 16px; font-size: 15.5px; font-style: italic; color: var(--ink-3); max-width: 32em; }
+.verdict__lean b { font-weight: 500; font-style: normal; color: var(--ink-2); }
+
+/* the code lights up where the engine is looking */
+.ln.is-scan { box-shadow: inset 3px 0 0 var(--red); background: var(--sheet-2); }
+.ln.is-scan .ln__no { color: var(--red); }
+
 .trouble h2 { font: italic 400 30px/1.15 var(--serif); margin: 0 0 12px; color: var(--red); }
 .trouble p { margin: 0 0 16px; max-width: 32em; }
 

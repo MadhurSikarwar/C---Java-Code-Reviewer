@@ -10,13 +10,16 @@ whole server on a 2MB single-line input, and returned 500 for bad payloads):
     with a timeout
 """
 import asyncio
+import json
 import os
 import sys
+import time
 import traceback
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -107,6 +110,45 @@ async def analyze_code(request: CodeRequest):
                                  "not in your code.")
 
 
+@router.post("/analyze/stream")
+async def analyze_stream(request: CodeRequest):
+    """Same analysis as /analyze, but as newline-delimited JSON: one `{"type":"trace",...}` line per stage as it finishes,
+    then a final `{"type":"result","data":{...}}` (or `{"type":"error","detail":...}`)."""
+    language = LANGUAGE_ALIASES[request.language]
+    validate_source(request.code, language)          # bad input is still a proper 4xx, before any streaming starts
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue = asyncio.Queue()
+
+    def put(ev):
+        loop.call_soon_threadsafe(q.put_nowait, ev)
+
+    def worker():
+        try:
+            put({"type": "result", "data": _run_analysis(request.code, language, request.model_type, trace=put)})
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            put({"type": "error", "detail": f"Internal analysis error ({type(e).__name__}). This is a bug in IntelliReview, "
+                                            "not in your code."})
+        finally:
+            put(None)
+
+    loop.run_in_executor(None, worker)
+
+    async def lines():
+        deadline = time.monotonic() + ANALYSIS_TIMEOUT_S
+        while True:
+            try:
+                ev = await asyncio.wait_for(q.get(), timeout=max(0.1, deadline - time.monotonic()))
+            except asyncio.TimeoutError:
+                yield json.dumps({"type": "error", "detail": f"Analysis took longer than {ANALYSIS_TIMEOUT_S}s and was abandoned."}) + "\n"
+                return
+            if ev is None:
+                return
+            yield json.dumps(ev) + "\n"
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson", headers={"Cache-Control": "no-store"})
+
+
 def _call_graph(cfgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Compact per-function call graph for the UI (the raw CFGs are far too large to ship)."""
     defined = {c.get("function") for c in cfgs}
@@ -118,9 +160,21 @@ def _call_graph(cfgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-def _run_analysis(source: str, language: str, model_type: str = "dl") -> dict:
-    """Core analysis pipeline. `language` is 'C' or 'JAVA'."""
-    sa = static_analysis(source, language)
+def _run_analysis(source: str, language: str, model_type: str = "dl", trace=None) -> dict:
+    """Core analysis pipeline. `language` is 'C' or 'JAVA'.
+
+    Every stage reports what it is doing through `tr`; the events are kept in the result (`trace`) and, when a `trace`
+    callback is given (the streaming endpoint), forwarded live so the UI can show the engine thinking."""
+    t0 = time.perf_counter()
+    events: list = []
+
+    def tr(e: dict) -> None:
+        e = dict(e, t=int((time.perf_counter() - t0) * 1000))
+        events.append(e)
+        if trace:
+            trace(dict(e, type="trace"))
+
+    sa = static_analysis(source, language, trace=tr)
     parse_result = sa["parse_result"]
     memory_result = sa["memory_result"]
     unsafe_result = sa["unsafe_result"]
@@ -130,7 +184,9 @@ def _run_analysis(source: str, language: str, model_type: str = "dl") -> dict:
     v3_issues = sa["v3_issues"]
     all_issues = sa["all_issues"]
 
-    ml_result = predict_risk(sa["feature_vector"], model_type=model_type, issues=all_issues)
+    ml_result = predict_risk(sa["feature_vector"], model_type=model_type, issues=all_issues, trace=tr)
+    tr({"stage": "verdict", "kind": "verdict",
+        "text": f"Verdict: {ml_result.get('risk_label', '?')}, {int(ml_result.get('risk_score', 0))} out of 100."})
 
     suggestion_result = generate_suggestions(
         features=feature_data["features"],
@@ -205,6 +261,7 @@ def _run_analysis(source: str, language: str, model_type: str = "dl") -> dict:
         ],
         "suppressed": [{"line": int(i.get("line") or 0), "type": str(i.get("type", "")), "message": str(i.get("message", ""))}
                        for i in sa["suppressed"]],
+        "trace": events,
         "highlighted_lines": highlighted_lines,
         "function_complexity": [
             {

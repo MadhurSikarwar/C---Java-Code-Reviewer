@@ -66,9 +66,10 @@ class PointerStateTracker:
 
     # ---- reporting -----------------------------------------------------
     def _warn(self, kind, sev, msg, node_id, line, suggestion="", key_extra=None):
-        key = (kind, line, key_extra)
+        # one unchecked allocation is one finding, reported at its first use, however many paths/lines use it afterwards
+        key = (kind, None, key_extra) if kind == "UNCHECKED_ALLOC" else (kind, line, key_extra)
         existing = self.warnings.get(key)
-        if existing is None or _SEV[sev] > _SEV[existing.severity]:
+        if existing is None or _SEV[sev] > _SEV[existing.severity] or                 (kind == "UNCHECKED_ALLOC" and line < existing.line):
             self.warnings[key] = PathWarning(kind, sev, msg, node_id, line, suggestion)
 
     # ---- transfer function ---------------------------------------------
@@ -307,7 +308,8 @@ class PointerStateTracker:
                      ("null_deref_count", "NULL_DEREF"), ("invalid_free_count", "INVALID_FREE")):
             self.metrics[k] = sum(1 for w in self.warnings.values() if w.type == t)
 
-        return {"warnings": [w.to_dict() for w in self.warnings.values()], "metrics": self.metrics,
+        fn = self.cfg.get("function")
+        return {"warnings": [dict(w.to_dict(), function=fn) for w in self.warnings.values()], "metrics": self.metrics,
                 "truncated": self.truncated}
 
 

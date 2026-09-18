@@ -150,3 +150,8 @@ def test_large_correct_program_stays_clean():
                     for i in range(300))
     res = analyse(fns)
     assert risk_level_from_issues(res["all_issues"]) == 0
+
+
+def test_one_unchecked_allocation_is_one_finding():
+    res = analyse("void f(int n){ int*d=malloc(40); for(int i=0;i<n;i++) d[i]=i; d[0]=1; free(d); }")
+    assert [i["type"] for i in res["all_issues"]].count("UNCHECKED_ALLOC") == 1

@@ -150,13 +150,67 @@ def load_v4_dl_model():
         print(f"❌ Failed to load V4 DL model: {e}")
 
 
-def predict_risk(feature_vector: List[float], model_type: str = "v3", issues: List[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Thread-safe entry point (see `_predict_risk`)."""
+# Features that are *findings* (as opposed to the shape of the code). Zeroing them answers "what would this model say
+# from the structure of the code alone?" — a counterfactual that shows how much the verdict leans on the evidence.
+EVIDENCE_IDX = [7, 8, 13, 14, 21, 22, 23, 25, 26, 34, 35]
+_MODEL_TITLE = {"v3": "V3 forest", "dl": "DL V1 net", "ensemble": "Boosted ensemble", "v4_dl": "V4 net"}
+
+
+def _pct(p):
+    return {"Clean": round(p[0] * 100), "Moderate": round(p[1] * 100), "High": round(p[2] * 100)}
+
+
+def predict_risk(feature_vector: List[float], model_type: str = "v3", issues: List[Dict[str, Any]] = None,
+                 trace=None) -> Dict[str, Any]:
+    """Thread-safe entry point (see `_predict_risk`). `trace(event_dict)` receives the model's reasoning as it happens."""
     with _lock:
-        return _predict_risk(feature_vector, model_type, issues)
+        return _predict_risk(feature_vector, model_type, issues, trace)
 
 
-def _predict_risk(feature_vector: List[float], model_type: str = "v3", issues: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _pad(X, n):
+    if X.shape[1] < n:
+        return np.hstack((X, np.zeros((1, n - X.shape[1]))))
+    return X[:, :n]
+
+
+def _raw_proba(m_type: str, X_full):
+    """Class probabilities [clean, moderate, high] straight from one model (no gate), or None if it isn't available."""
+    global _dl_model, _dl_scaler, _v3_model, _v4_model, _v4_scaler, _model
+    if m_type == "dl":
+        if _dl_model is None:
+            load_dl_model()
+        if _dl_model is None:
+            return None
+        n = len(_dl_scaler.mean_) if hasattr(_dl_scaler, "mean_") else 19
+        return _dl_model.predict(_dl_scaler.transform(_pad(X_full, n)), verbose=0)[0].tolist()
+    if m_type == "v4_dl":
+        if _v4_model is None:
+            load_v4_dl_model()
+        if _v4_model is None:
+            return None
+        n = len(_v4_scaler.mean_) if (_v4_scaler is not None and hasattr(_v4_scaler, "mean_")) else 36
+        X = _pad(X_full, n)
+        if _v4_scaler is not None:
+            X = _v4_scaler.transform(X)
+        return _v4_model.predict(X, verbose=0)[0].tolist()
+    if m_type == "v3":
+        if _v3_model is None:
+            load_v3_model()
+        if _v3_model is None:
+            return None
+        X = _pad(X_full, getattr(_v3_model, "n_features_in_", 34))
+        return _v3_model.predict_proba(_as_frame(_v3_model, X))[0].tolist()
+    if m_type == "ensemble":
+        if _model is None:
+            load_model()
+        if _model is None:
+            return None
+        return _model.predict_proba(_as_frame(_model, _pad(X_full, 21)))[0].tolist()
+    return None
+
+
+def _predict_risk(feature_vector: List[float], model_type: str = "v3", issues: List[Dict[str, Any]] = None,
+                  trace=None) -> Dict[str, Any]:
     """
     Given a feature vector, return risk label, score 0–100, and per-class probabilities.
     model_type: 'dl', 'v3', 'ensemble', 'v4_dl', or 'all'.
@@ -171,86 +225,29 @@ def _predict_risk(feature_vector: List[float], model_type: str = "v3", issues: L
 
     X_full = np.array(feature_vector).reshape(1, -1)
     
-    # Classic features for ensemble model — always exactly 21 features
-    X_classic = np.copy(X_full)
-    if X_classic.shape[1] > 21:
-        X_classic = X_classic[:, :21]
-    elif X_classic.shape[1] < 21:
-        # Pad with zeros to reach the 21 features the ensemble was trained on
-        padding = np.zeros((1, 21 - X_classic.shape[1]))
-        X_classic = np.hstack((X_classic, padding))
+    emit = trace or (lambda e: None)
 
     for m_type in models_to_run:
-        label_idx = 0
-        proba = [0.0, 0.0, 0.0]
-        
-        if m_type == "dl":
-            global _dl_model, _dl_scaler
-            if _dl_model is None: load_dl_model()
-            if _dl_model is None: continue
-            
-            X_dl = np.copy(X_full)
-            # The DL V1 model always expects 19 features (FEATURE_NAMES)
-            target_feats = len(_dl_scaler.mean_) if hasattr(_dl_scaler, 'mean_') else 19
-            if X_dl.shape[1] < target_feats:
-                padding = np.zeros((1, target_feats - X_dl.shape[1]))
-                X_dl = np.hstack((X_dl, padding))
-            elif X_dl.shape[1] > target_feats:
-                X_dl = X_dl[:, :target_feats]
-                
-            X_scaled = _dl_scaler.transform(X_dl)
-            probs = _dl_model.predict(X_scaled, verbose=0)[0].tolist()
-            label_idx = int(np.argmax(probs))
-            proba = probs
-
-        elif m_type == "v3":
-            global _v3_model
-            if _v3_model is None: load_v3_model()
-            if _v3_model is None: continue
-            
-            X_v3 = np.copy(X_full)
-            target_feats = getattr(_v3_model, 'n_features_in_', 34)
-            if X_v3.shape[1] < target_feats:
-                padding = np.zeros((1, target_feats - X_v3.shape[1]))
-                X_v3 = np.hstack((X_v3, padding))
-            elif X_v3.shape[1] > target_feats:
-                X_v3 = X_v3[:, :target_feats]
-                
-            label_idx = int(_v3_model.predict(_as_frame(_v3_model, X_v3))[0])
-            try: proba = _v3_model.predict_proba(_as_frame(_v3_model, X_v3))[0].tolist()
-            except AttributeError:
-                proba = [0.0, 0.0, 0.0]
-                proba[label_idx] = 1.0
-
-        elif m_type == "v4_dl":
-            global _v4_model, _v4_scaler
-            if _v4_model is None: load_v4_dl_model()
-            if _v4_model is None: continue
-
-            X_v4 = np.copy(X_full)
-            target_feats_v4 = len(_v4_scaler.mean_) if (_v4_scaler is not None and hasattr(_v4_scaler, 'mean_')) else 36
-            if X_v4.shape[1] < target_feats_v4:
-                padding = np.zeros((1, target_feats_v4 - X_v4.shape[1]))
-                X_v4 = np.hstack((X_v4, padding))
-            elif X_v4.shape[1] > target_feats_v4:
-                X_v4 = X_v4[:, :target_feats_v4]
-
-            if _v4_scaler is not None:
-                X_v4 = _v4_scaler.transform(X_v4)
-            probs = _v4_model.predict(X_v4, verbose=0)[0].tolist()
-            label_idx = int(np.argmax(probs))
-            proba = probs
-
-        elif m_type == "ensemble":
-            global _model
-            if _model is None: load_model()
-            if _model is None: continue
-            
-            label_idx = int(_model.predict(_as_frame(_model, X_classic))[0])
-            try: proba = _model.predict_proba(_as_frame(_model, X_classic))[0].tolist()
-            except AttributeError:
-                proba = [0.0, 0.0, 0.0]
-                proba[label_idx] = 1.0
+        proba = _raw_proba(m_type, X_full)
+        if proba is None:
+            continue
+        label_idx = int(np.argmax(proba))
+        raw_label_idx = label_idx
+        n_inputs = {"dl": 21, "ensemble": 21, "v3": 34, "v4_dl": 36}.get(m_type, len(feature_vector))
+        emit({"stage": "models", "kind": "model", "model": m_type,
+              "text": f"{_MODEL_TITLE.get(m_type, m_type)} reads {n_inputs} numbers and leans {_label_names[label_idx]}.",
+              "probs": _pct(proba)})
+        # counterfactual: the same model with every finding-derived feature set to zero
+        if any(float(feature_vector[i]) != 0.0 for i in EVIDENCE_IDX if i < len(feature_vector)):
+            X_alt = np.array(feature_vector, dtype=float).copy()
+            for i in EVIDENCE_IDX:
+                if i < len(X_alt):
+                    X_alt[i] = 0.0
+            alt = _raw_proba(m_type, X_alt.reshape(1, -1))
+            if alt is not None:
+                emit({"stage": "models", "kind": "counterfactual", "model": m_type,
+                      "text": f"From the shape of the code alone, with the findings removed, it would say "
+                              f"{_label_names[int(np.argmax(alt))]}.", "probs": _pct(alt)})
 
         # --- EVIDENCE GATING & CONFIDENCE CALIBRATION ---
         confidence = float(np.max(proba) * 100)
@@ -289,6 +286,14 @@ def _predict_risk(feature_vector: List[float], model_type: str = "v3", issues: L
             label_idx = 1
             proba = [0.0, max(proba[1], 0.5), proba[2]]
             explanations.append("Raised to MODERATE RISK: medium-severity findings were reported.")
+
+        gate_notes = [x for x in explanations if not x.startswith("Very high cyclomatic")]
+        for note in gate_notes:
+            note = note.replace("HIGH RISK", "High risk").replace("MODERATE RISK", "Moderate risk")
+            emit({"stage": "gate", "kind": "gate", "model": m_type, "text": note, "to": _label_names[label_idx]})
+        if not gate_notes:
+            emit({"stage": "gate", "kind": "gate", "model": m_type, "to": _label_names[label_idx],
+                  "text": f"The evidence gate checked the findings against the model: no change, still {_label_names[label_idx]}."})
 
         label = _label_names[label_idx]
         risk_score = _compute_risk_score(label_idx, proba, feature_vector[:21], m_type)

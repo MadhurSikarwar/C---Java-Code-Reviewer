@@ -140,6 +140,7 @@ def _parse_with_pycparser(source: str, lines) -> Dict[str, Any]:
 
     return {
         "ast": ast,
+        "learned_types": list(learned),
         "functions": visitor.functions,
         "num_functions": len(visitor.functions),
         "num_loops": visitor.num_loops,
