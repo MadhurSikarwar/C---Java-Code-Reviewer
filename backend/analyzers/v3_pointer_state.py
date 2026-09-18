@@ -106,6 +106,11 @@ class PointerStateTracker:
                 if var not in self.locals:
                     state.pop(var, None)
                     continue
+                if kind == "R":
+                    self._warn("RESOURCE_LEAK", "MEDIUM",
+                               f"Resource Leak: '{var}' (opened at line {st[1]}) is overwritten by a new handle at line "
+                               f"{line} without being closed.", nid, st[1],
+                               "Close the old file/descriptor before reusing the variable.", var)
                 state[var] = ("R", line)
                 self.metrics["pointer_state_transitions"] += 1
 
@@ -171,7 +176,7 @@ class PointerStateTracker:
                                f"Null Pointer Dereference: '{var}' is NULL on this path when it is dereferenced.",
                                nid, line, "Check the pointer against NULL before using it.", var)
                 elif kind == "A":
-                    self._warn("UNCHECKED_ALLOC", "MEDIUM",
+                    self._warn("UNCHECKED_ALLOC", "MEDIUM" if op == "DEREF" else "LOW",
                                f"Unchecked Allocation: the result of the allocation stored in '{var}' (line {st[1]}) "
                                f"is used without checking for NULL (CWE-690).", nid, line,
                                "Check `if (ptr == NULL)` right after malloc/calloc/realloc.", var)
@@ -186,6 +191,15 @@ class PointerStateTracker:
                     state[var] = ("AP", st[1])
                 elif kind == "R":
                     state[var] = ("RP", st[1])
+
+            elif op.startswith("ALIAS@"):
+                src = op.split("@", 1)[1]
+                sst = state.get(src)
+                if sst and sst[0] in ("N", "F", "S"):
+                    state[var] = sst                 # both names now refer to NULL / freed / stack memory
+                else:
+                    state.pop(src, None)             # ownership may have moved to `var`: stop tracking both
+                    state.pop(var, None)
 
             elif op in ("ESCAPE", "ASSIGN_OTHER"):
                 state.pop(var, None)
@@ -332,6 +346,8 @@ def analyze_pointers(cfg_list: List[Dict[str, Any]]) -> Dict[str, Any]:
             for op, var, _line in node.get("ptr_ops", []):
                 if op.split("@")[0] in ("FREE", "ESCAPE", "PASS", "BADFREE") and var in order:
                     owning.add((cfg.get("function"), order.index(var)))
+                elif op.startswith("ALIAS@") and op.split("@", 1)[1] in order:
+                    owning.add((cfg.get("function"), order.index(op.split("@", 1)[1])))
     nonowning = frozenset((cfg.get("function"), i) for cfg in (cfg_list or [])
                           for i in range(len(cfg.get("param_order", []))) if (cfg.get("function"), i) not in owning)
 

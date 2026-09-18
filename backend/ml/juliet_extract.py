@@ -78,15 +78,42 @@ def _eval_pp(expr: str) -> bool:
     return True
 
 
+# macros std_testcase.h defines (the real analyser would resolve the #include)
+_BUILTIN_MACROS = {"ALLOCA": "alloca", "true": "1", "false": "0"}
+_DEFINE = re.compile(r"#\s*define\s+(\w+)(?!\()[ \t]+(.+)$")
+
+
+def _expand(line: str, macros: Dict[str, str]) -> str:
+    """Object-like macro expansion (a few rounds, so macros that name other macros resolve)."""
+    if not macros:
+        return line
+    rx = re.compile(r"\b(?:" + "|".join(re.escape(k) for k in macros) + r")\b")
+    for _ in range(4):
+        new = rx.sub(lambda m: macros[m.group(0)], line)
+        if new == line:
+            break
+        line = new
+    return line
+
+
 def resolve_conditionals(text: str) -> str:
+    """Resolve #ifdef/#if (Linux, everything compiled in) and expand object-like #define macros, as a preprocessor would.
+    The analyser itself never sees directives; doing this here mimics resolving the headers of real code."""
     out: List[str] = []
     stack: List[List[bool]] = []          # [parent_active, taken, active]
     active = True
+    macros: Dict[str, str] = dict(_BUILTIN_MACROS)
     for line in text.splitlines():
         s = line.strip()
         if s.startswith("#"):
             d = re.match(r"#\s*(\w+)\s*(.*)", s)
             kw, rest = (d.group(1), d.group(2)) if d else ("", "")
+            if kw == "define" and active:
+                md = _DEFINE.match(s)
+                if md:
+                    body = re.sub(r"/\*.*?\*/|//.*$", "", md.group(2)).strip()
+                    if body and not body.endswith("\\"):
+                        macros[md.group(1)] = _expand(body, macros)
             if kw in ("ifdef", "ifndef", "if"):
                 if kw == "ifdef":
                     cond = False
@@ -113,30 +140,13 @@ def resolve_conditionals(text: str) -> str:
                 continue
             out.append("")           # #include / #define / #pragma ...
             continue
-        out.append(line if active else "")
+        out.append(_expand(line, macros) if active else "")
     return "\n".join(out)
 
 
 # ------------------------------------------------------------------------------------------------------------
-# function extraction
+# labelled-function detection
 # ------------------------------------------------------------------------------------------------------------
-_C_FUNC = re.compile(r"(?m)^[ \t]*(?:static[ \t]+)?(?:const[ \t]+)?(?:[\w]+[ \t\*]+)+?(\w+)[ \t]*\(([^;{}()]*)\)[ \t]*\n?[ \t]*\{")
-_J_FUNC = re.compile(r"(?m)^[ \t]*(?:public|private|protected)[ \t]+(?:static[ \t]+)?(?:final[ \t]+)?[\w<>\[\]]+[ \t]+(\w+)[ \t]*\(([^;{}()]*)\)[ \t]*(?:throws[ \t]+[\w.,\s]+?)?[ \t]*\n?[ \t]*\{")
-
-
-def _match_brace(code: str, open_idx: int) -> int:
-    depth = 0
-    for i in range(open_idx, len(code)):
-        c = code[i]
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                return i
-    return -1
-
-
 def _is_bad(name: str) -> bool:
     return bool(re.search(r"(?:^|_)bad$", name)) or name == "bad"
 
@@ -149,97 +159,103 @@ def _is_good_variant(name: str) -> bool:
         and "Source" not in name
 
 
-def extract_functions(code: str, language: str) -> List[Tuple[str, str, str]]:
-    """Return [(name, params, full_function_text)] for the *bad*/*good* functions in `code` (already comment-free)."""
-    rx = _C_FUNC if language == "C" else _J_FUNC
-    out = []
-    for m in rx.finditer(code):
-        name, params = m.group(1), m.group(2).strip()
-        if name in ("if", "for", "while", "switch", "return", "sizeof"):
-            continue
-        if not (_is_bad(name) or _is_good_variant(name)):
-            continue
-        if params not in ("", "void") and language == "C":
-            continue                 # takes input from a caller (sink half of a multi-file flow)
-        open_idx = code.index("{", m.end() - 1)
-        close = _match_brace(code, open_idx)
-        if close == -1:
-            continue
-        out.append((name, params, code[m.start():close + 1].strip("\n")))
-    return out
-
-
-_FILE_DECL = re.compile(r"^\s*static\s+(?:const\s+)?(?:int|long|size_t|unsigned(?:\s+int)?)\s+\w+\s*=\s*[^;{}]+;\s*$")
-
-
-def file_level_constants(code: str) -> List[str]:
-    """`static int staticTrue = 1;`-style declarations at file scope (brace depth 0): the flow-variant constants."""
-    out, depth = [], 0
-    for line in code.split("\n"):
-        if depth == 0 and _FILE_DECL.match(line):
-            out.append(line.strip())
-        depth += line.count("{") - line.count("}")
-    return out
-
-
-def _rename(fn_text: str, name: str, new: str) -> str:
-    return re.sub(rf"\b{re.escape(name)}\b", new, fn_text)
-
-
-# ------------------------------------------------------------------------------------------------------------
 def _cwe_of(path: str) -> Optional[int]:
     m = re.search(r"CWE(\d+)_", os.path.basename(path))
     return int(m.group(1)) if m else None
 
 
-def _single_file_variant(fname: str) -> bool:
-    return bool(re.search(r"_\d{2}\.(?:c|java)$", fname))
+# functions the Juliet support library (testcasesupport/io.c) provides; included in a sample only when it uses them
+C_SUPPORT_FUNCS = ("int globalReturnsTrue() { return 1; }\n int globalReturnsFalse() { return 0; }\n"
+                   "int globalReturnsTrueOrFalse() { return (rand() % 2); }\n")
+
+# stubs for the support classes/headers the test cases import (the analyser would resolve the import)
+JAVA_STUB = (
+    "class IO { static final boolean STATIC_FINAL_TRUE = true; static final boolean STATIC_FINAL_FALSE = false; "
+    "static final int STATIC_FINAL_FIVE = 5; static boolean staticTrue = true; static boolean staticFalse = false; "
+    "static int staticFive = 5; static boolean staticReturnsTrue() { return true; } "
+    "static boolean staticReturnsFalse() { return false; } }\n"
+)
+
+
+def _group_key(fname: str, ext: str) -> Optional[str]:
+    """`X_51a.c`, `X_51b.c` -> `X_51` ; `X_07.c` -> `X_07` ; anything else (no variant number) -> None."""
+    m = re.search(r"^(.*_\d{2})[a-z]?\." + ext + "$", fname)
+    return m.group(1) if m else None
 
 
 def collect(root: str, language: str, train_cwes: Dict[int, int], max_files_per_cwe: int, seed: int,
-            max_good_only_cwes_files: int) -> List[dict]:
-    ext = ".c" if language == "C" else ".java"
+            max_good_only_cwes_files: int, multi_file: bool = True) -> List[dict]:
+    from ml.juliet_units import split_items, class_body, build_sample
+    ext = "c" if language == "C" else "java"
     rng = random.Random(seed)
     samples: List[dict] = []
-    stats = {"files": 0, "bad": 0, "good": 0}
+    stats = {"groups": 0, "bad": 0, "good": 0, "multi": 0}
     for cwe_dir in sorted(os.listdir(root)):
         m = re.match(r"CWE(\d+)_", cwe_dir)
         if not m:
             continue
         cwe = int(m.group(1))
         base = os.path.join(root, cwe_dir)
-        files: List[str] = []
+        groups: Dict[str, List[str]] = {}
         for dp, _, fns in os.walk(base):
             for fn in fns:
-                if fn.endswith(ext) and _single_file_variant(fn) and "w32" not in fn.lower():
-                    files.append(os.path.join(dp, fn))
-        files.sort()
-        rng.shuffle(files)
+                if not fn.endswith("." + ext) or "w32" in fn.lower():
+                    continue
+                key = _group_key(fn, ext)
+                if key is None:
+                    continue
+                if not multi_file and not re.search(r"_\d{2}\." + ext + "$", fn):
+                    continue
+                groups.setdefault(os.path.join(dp, key), []).append(os.path.join(dp, fn))
+        keys = sorted(groups)
+        rng.shuffle(keys)
         trained = cwe in train_cwes
-        files = files[:max_files_per_cwe if trained else max_good_only_cwes_files]
-        for path in files:
-            try:
-                raw = open(path, encoding="utf-8", errors="replace").read()
-            except OSError:
+        keys = keys[:max_files_per_cwe if trained else max_good_only_cwes_files]
+        for key in keys:
+            paths = sorted(groups[key])
+            items, ok = [], True
+            for path in paths:
+                try:
+                    raw = open(path, encoding="utf-8", errors="replace").read()
+                except OSError:
+                    ok = False
+                    break
+                code = sanitize(resolve_conditionals(raw), keep_strings=True, java_text_blocks=(language != "C"))
+                if language == "C":
+                    items += split_items(code, "C")
+                else:
+                    cb = class_body(code)
+                    if cb is None:
+                        ok = False
+                        break
+                    items += split_items(cb[1], "JAVA")
+            if not ok:
                 continue
-            code = sanitize(resolve_conditionals(raw), keep_strings=True, java_text_blocks=(language != "C"))
-            fns = extract_functions(code, language)
-            decls = file_level_constants(code) if language == "C" else []
-            stats["files"] += 1
-            for idx, (name, params, text) in enumerate(fns):
-                kind = "bad" if _is_bad(name) else "good"
+            if language == "C":
+                items += split_items(C_SUPPORT_FUNCS, "C")       # what testcasesupport/io.c defines
+            stats["groups"] += 1
+            stats["multi"] += len(paths) > 1
+            labelled = [it for it in items if it["kind"] == "func" and it["name"]
+                        and (_is_bad(it["name"]) or _is_good_variant(it["name"]))
+                        and (language != "C" or it["params"] in ("", "void"))]   # C: params => the sink half of a flow
+            for idx, target in enumerate(labelled):
+                kind = "bad" if _is_bad(target["name"]) else "good"
                 if kind == "bad" and not trained:
                     continue                    # positives outside the supported CWE list are not used for training
-                body = _rename(text, name, f"fn_{idx}")
+                built = build_sample(items, target, idx, language)
+                if built is None:
+                    continue
+                body = built["body"]
                 if language == "C":
-                    src = C_STUB_TYPES + "\n" + "\n".join(decls) + "\n" + body + "\n"
+                    src = C_STUB_TYPES + "\n" + "\n".join(built["types"]) + "\n" + body + "\n"
                 else:
-                    src = "public class T {\n" + body + "\n}\n"
+                    src = "public class T {\n" + body + "\n}\n" + JAVA_STUB
                 label = 0 if kind == "good" else train_cwes[cwe]
-                samples.append({"source": src, "body": body, "decls": decls, "language": "C" if language == "C" else "JAVA", "cwe": cwe,
-                                "label": label, "kind": kind, "file": os.path.basename(path), "group": f"{language}-{cwe}"})
+                samples.append({"source": src, "body": body, "decls": built["types"] if language == "C" else [],
+                                "language": "C" if language == "C" else "JAVA", "cwe": cwe,
+                                "label": label, "kind": kind, "file": os.path.basename(paths[0]), "group": f"{language}-{cwe}"})
                 stats[kind] += 1
-    print(f"[{language}] files={stats['files']}  bad={stats['bad']}  good={stats['good']}")
+    print(f"[{language}] units={stats['groups']} (multi-file {stats['multi']})  bad={stats['bad']}  good={stats['good']}")
     return samples
 
 

@@ -11,6 +11,8 @@ from typing import Dict, Any, List
 from parsers.text_utils import sanitize
 from parsers.c_bounds import FuncBounds
 from parsers.c_taint import FuncTaint
+from parsers.c_inline import inline_file
+from analyzers.v3_cfg_builder import _file_constants
 
 # Functions whose first/ith argument is a printf-style format string.
 # name -> index of the format argument
@@ -133,13 +135,24 @@ def _parse_with_pycparser(source: str, lines) -> Dict[str, Any]:
                 learned.extend(guesses[:30])
         else:
             raise ValueError("too many unknown type names")
-        visitor = _CASTVisitor(lines)
+        # counts and structure come from the code as written ...
+        visitor = _CASTVisitor(lines, analyze=False)
         visitor.visit(ast)
+        # ... findings from an analysis copy in which same-file calls are expanded (see parsers/c_inline.py)
+        try:
+            iast, ctx_only = inline_file(ast)
+        except Exception:  # noqa: BLE001 - never lose the plain analysis to an inliner bug
+            iast, ctx_only = ast, set()
+        analysed = _CASTVisitor(lines, analyze=True, skip=ctx_only, fconsts=_file_constants(ast))
+        analysed.visit(iast)
+        visitor.unsafe_calls = analysed.unsafe_calls
     finally:
         sys.setrecursionlimit(old_limit)
 
     return {
         "ast": ast,
+        "ast_analysis": iast,
+        "ctx_only": sorted(ctx_only),
         "learned_types": list(learned),
         "functions": visitor.functions,
         "num_functions": len(visitor.functions),
@@ -206,6 +219,37 @@ def _type_name_candidates(code: str) -> List[str]:
     return out
 
 
+def _static_int(node):
+    """Value of a constant integer expression (literals, + - *, sizeof(type)); None if it is not one."""
+    from pycparser import c_ast
+    from parsers.c_bounds import _type_size
+    if isinstance(node, c_ast.Cast):
+        return _static_int(node.expr)
+    if isinstance(node, c_ast.Constant) and node.type in ("int", "unsigned int", "long int", "unsigned long int"):
+        try:
+            return int(node.value.rstrip("uUlL"), 0)
+        except ValueError:
+            return None
+    if isinstance(node, c_ast.UnaryOp) and node.op == "sizeof":
+        if isinstance(node.expr, c_ast.Typename):
+            return _type_size(node.expr)
+        return 8
+    if isinstance(node, c_ast.BinaryOp) and node.op in ("+", "-", "*"):
+        a, b = _static_int(node.left), _static_int(node.right)
+        if a is None or b is None:
+            return None
+        return a + b if node.op == "+" else a - b if node.op == "-" else a * b
+    return None
+
+
+def _is_null(node) -> bool:
+    from pycparser import c_ast
+    while isinstance(node, c_ast.Cast):
+        node = node.expr
+    return (isinstance(node, c_ast.Constant) and node.value in ("0", "0L")) or \
+        (isinstance(node, c_ast.ID) and node.name in ("NULL", "nullptr"))
+
+
 def _is_string_literal(node) -> bool:
     from pycparser import c_ast
     return isinstance(node, c_ast.Constant) and node.type == "string"
@@ -222,8 +266,11 @@ def _literal_len(node) -> int:
 class _CASTVisitor(object):
     """pycparser AST visitor to extract features."""
 
-    def __init__(self, lines):
+    def __init__(self, lines, analyze: bool = True, skip=frozenset(), fconsts=None):
         self.lines = lines
+        self.fconsts = fconsts or {}
+        self.analyze = analyze               # False: only count things (structure of the code as written)
+        self.skip = skip                     # static helpers analysed only through their callers
         self.functions = []
         self.num_loops = 0
         self.max_nesting_depth = 0
@@ -247,15 +294,18 @@ class _CASTVisitor(object):
 
         if isinstance(node, c_ast.FuncDef):
             func_name = node.decl.name if node.decl else "unknown"
+            if self.analyze and func_name in self.skip:
+                return
             coord = node.coord.line if node.coord else 0
             self.functions.append({"name": func_name, "line": coord})
             saved, saved_t, saved_w = self._fb, self._ft, self._fmt_wrapper_params
             self._fmt_wrapper_params = _format_wrapper_params(node)
-            self._fb = FuncBounds(node)
-            self._fb.run()                       # provable buffer overflows + proofs that a copy is safe
-            self.unsafe_calls.extend(self._fb.issues)
-            self._ft = FuncTaint(node)
-            self._ft.run()                       # which expressions can carry attacker-influenced data
+            if self.analyze:
+                self._ft = FuncTaint(node)
+                self._ft.run()                   # which expressions can carry attacker-influenced data
+                self._fb = FuncBounds(node, self.fconsts, self._ft)
+                self._fb.run()                   # provable buffer overflows + proofs that a copy is safe
+                self.unsafe_calls.extend(self._fb.issues)
             self._visit_children(node)
             self._fb, self._ft, self._fmt_wrapper_params = saved, saved_t, saved_w
 
@@ -303,6 +353,8 @@ class _CASTVisitor(object):
         elif call_name == "free":
             self.num_frees += 1
             self.free_lines.append(line)
+        if not self.analyze:
+            return
 
         # printf(user_string) — format string vulnerability
         if call_name in FORMAT_FUNCS:
@@ -311,9 +363,12 @@ class _CASTVisitor(object):
                 fmt = args[idx]
                 is_wrapper = isinstance(fmt, __import__("pycparser").c_ast.ID) and fmt.name in self._fmt_wrapper_params
                 # `void logf(const char *fmt, ...) { vprintf(fmt, ap); }` is the standard wrapper idiom, not a bug
-                self._add_unsafe("format_string", line, "LOW" if is_wrapper else self._sev_by_taint([fmt]),
-                                 callee=call_name)
+                if not (self._ft is not None and self._ft.is_constant(fmt)):    # a constant format string is fine
+                    self._add_unsafe("format_string", line, "LOW" if is_wrapper else self._sev_by_taint([fmt]),
+                                     callee=call_name)
 
+        if call_name in ("alloca", "_alloca") and args and (_static_int(args[0]) or 10 ** 9) <= 8192:
+            return                                # a small constant stack allocation is ordinary code
         if call_name in ALWAYS_UNSAFE_C:
             sev = ALWAYS_UNSAFE_C[call_name]
             if sev == "HIGH" and call_name in ("strcpy", "strcat", "sprintf", "vsprintf"):
@@ -323,16 +378,16 @@ class _CASTVisitor(object):
                 sev = None                       # proven to fit (or already reported as a definite overflow)
             elif verdict == "MEDIUM":
                 sev = "MEDIUM"                   # sizes fit individually, but existing content may not
-            elif call_name == "sprintf" and len(args) >= 2 and _is_string_literal(args[1]) \
-                    and "%" not in args[1].value and self._fb:
-                dc = self._fb._elems_of(args[0])
-                if dc is not None and _literal_len(args[1]) + 1 <= dc:
-                    sev = None                   # sprintf of a %-free literal that fits
             if sev:
                 self._add_unsafe(call_name, line, sev)
 
-        elif call_name in UNSAFE_IF_DYNAMIC and args and not _is_string_literal(args[0]):
-            self._add_unsafe(call_name, line, self._sev_by_taint(args[:1]))
+        elif call_name in UNSAFE_IF_DYNAMIC and args:
+            # system/popen run their FIRST argument; exec* run a program with ALL the arguments that follow
+            checked = args[:1] if call_name in ("system", "popen") else args
+            dynamic = [a for a in checked if not _is_string_literal(a) and not _is_null(a)
+                       and not (self._ft is not None and self._ft.is_constant(a))]      # a constant command is not an injection
+            if dynamic:
+                self._add_unsafe(call_name, line, self._sev_by_taint(dynamic))
 
     def _sev_by_taint(self, exprs) -> str:
         """HIGH if any of `exprs` can carry attacker-influenced data, MEDIUM when its provenance is unknown/local."""

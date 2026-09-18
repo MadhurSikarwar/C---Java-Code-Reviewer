@@ -18,6 +18,7 @@ import re
 from typing import Dict, Any, List, Tuple, Set
 
 from parsers.text_utils import sanitize
+from analyzers.java_taint import analyze_java_taint
 
 SOURCE_RE = re.compile(
     r"\.\s*readLine\s*\(|\bgetParameter\s*\(|\bgetParameterValues\s*\(|\bgetHeader\s*\(|\bgetCookies\s*\(|"
@@ -173,6 +174,12 @@ def detect_java_security(source: str) -> Dict[str, Any]:
     static_consts = {m.group(1) for m in re.finditer(
         r"\bstatic\s+final\s+[\w<>\[\]]+\s+(\w+)\s*=\s*(?:\"[^\"]*\"|-?\d[\w.]*)\s*;", code)}
 
+    # ---- taint rules: the AST interpreter (analyzers/java_taint.py); the text rules below are the fallback ---------
+    ast_findings = analyze_java_taint(code)
+    if ast_findings is not None:
+        for f in ast_findings:
+            add(f["type"], f["severity"], f["line"], f["message"], f["suggestion"])
+
     # ---- per-method taint rules -------------------------------------------------------------
     bmap = _brace_map(nostr)
     for mm in METHOD_RE.finditer(nostr):
@@ -231,7 +238,8 @@ def detect_java_security(source: str) -> Dict[str, Any]:
                 continue
             line = base_line + body.count("\n", 0, sm.start()) + stmt[:len(stmt) - len(stmt.lstrip())].count("\n")
 
-            _check_sinks(stmt, stmt_ns, line, tainted, ext_params, const_vars, add, secret_literals)
+            _check_sinks(stmt, stmt_ns, line, tainted, ext_params, const_vars, add, secret_literals,
+                         injection=ast_findings is None)
 
             core = re.sub(r"^\s*(?:else\s+)?(?:if\s*\((?:[^()]|\([^()]*\))*\)\s*)?", "", stmt)
             am = re.match(r"\s*(?:final\s+)?(?:[\w.<>\[\],?]+\s+)?(\w+)(?:\s*\[\s*\])*\s*(\+?=)\s*(?!=)(.+)$", core, re.S)
@@ -325,7 +333,7 @@ def _classify(arg: str, tainted: Set[str], ext_params: Set[str], const_vars: Set
     return "constant"
 
 
-def _check_sinks(stmt, stmt_ns, line, tainted, ext_params, const_vars, add, secret_literals=frozenset()):
+def _check_sinks(stmt, stmt_ns, line, tainted, ext_params, const_vars, add, secret_literals=frozenset(), injection=True):
     def each(rx):
         for m in rx.finditer(stmt_ns):
             open_idx = stmt_ns.find("(", m.end() - 1 if m.group(0).endswith("(") else m.start())
@@ -343,6 +351,14 @@ def _check_sinks(stmt, stmt_ns, line, tainted, ext_params, const_vars, add, secr
                 add("HARDCODED_CREDENTIAL", "MEDIUM", line,
                     "Hard-coded credential: a fixed string literal is used as a password or key.",
                     "Read secrets from configuration or a secrets manager, never from source code.")
+    if not injection:
+        for m in DESER_SINKS.finditer(stmt_ns):
+            untrusted = SOURCE_RE.search(stmt) or _identifiers(stmt) & (tainted | ext_params) or "Socket" in stmt \
+                or "request" in stmt.lower()
+            add("INSECURE_DESERIALIZATION", "HIGH" if untrusted else "MEDIUM", line,
+                "Insecure deserialization: ObjectInputStream.readObject() on data that may be attacker controlled.",
+                "Avoid native Java serialization for untrusted data; use a look-ahead ObjectInputFilter or JSON.")
+        return
     for m, arg in each(SQL_SINKS):
         kind = _classify(arg, tainted, ext_params, const_vars)
         if kind in ("tainted", "param") and ("+" in arg or kind == "tainted"):

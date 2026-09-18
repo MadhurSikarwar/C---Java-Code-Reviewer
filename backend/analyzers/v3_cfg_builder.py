@@ -37,6 +37,13 @@ NON_OWNING = {
     "dup", "dup2", "select", "poll", "listen", "bind", "connect", "getsockopt", "setsockopt", "recvfrom", "sendto",
     "readdir", "rewinddir", "flock", "fsync", "ftruncate", "mmap", "getline", "getdelim", "fscanf", "vfscanf",
 }
+# library calls that read or write THROUGH these pointer arguments: passing NULL / freed memory there is a real dereference
+DEREF_ARGS = {
+    "strcpy": (0, 1), "strncpy": (0, 1), "strcat": (0, 1), "strncat": (0, 1), "memcpy": (0, 1), "memmove": (0, 1),
+    "memset": (0,), "strlen": (0,), "strcmp": (0, 1), "strncmp": (0, 1), "memcmp": (0, 1), "sprintf": (0,),
+    "snprintf": (0,), "fgets": (0,), "gets": (0,), "read": (1,), "recv": (1,), "wcscpy": (0, 1), "wcslen": (0,),
+    "wcscat": (0, 1), "wcsncpy": (0, 1), "strchr": (0,), "strstr": (0, 1), "atoi": (0,), "puts": (0,), "fputs": (0,),
+}
 NON_OWNING_PREFIXES = ("print", "puts", "put", "log", "show", "display", "dump", "write", "str", "mem", "is", "has",
                        "get", "check", "print_", "trace", "debug")
 
@@ -266,7 +273,10 @@ class CFGNode:
                         ordered_ops.append(("USE", v, line))
                         # PASS@callee@argindex lets the pointer analysis look the callee up: a function defined in
                         # this file that never frees or stores that parameter does not take ownership of it
-                        ptr_ops.append(("USEARG" if non_owning else (f"PASS@{name}@{i}" if name else "PASS"), v, line))
+                        if name in DEREF_ARGS and i in DEREF_ARGS[name]:
+                            ptr_ops.append(("DEREF", v, line))
+                        else:
+                            ptr_ops.append(("USEARG" if non_owning else (f"PASS@{name}@{i}" if name else "PASS"), v, line))
                     else:
                         self.visit(a)
                 if name is None:            # call through an expression: visit it
@@ -360,6 +370,12 @@ class CFGNode:
                 if _is_null_const(rv):
                     ptr_ops.append(("NULL", var, line))
                     return
+                rc = _unwrap(rv)
+                if isinstance(rc, c_ast.FuncCall) and isinstance(rc.name, c_ast.ID) and rc.name.name in ("alloca", "_alloca"):
+                    for a in (rc.args.exprs if rc.args else []):
+                        self.visit(a)
+                    ptr_ops.append(("STACKPTR", var, line))                   # alloca() memory lives on the stack
+                    return
                 r0 = _unwrap(rv)
                 if isinstance(r0, c_ast.UnaryOp) and r0.op == "&" and isinstance(_unwrap(r0.expr), (c_ast.ID, c_ast.ArrayRef)):
                     self.visit(r0.expr)
@@ -374,10 +390,9 @@ class CFGNode:
                     ordered_ops.append(("USE", src, line))
                     ptr_ops.append(("STACKPTR", var, line))                   # p = buf  (buf is a local array)
                     return
-                if src:                       # alias: q = p   -> stop tracking both
+                if src:                       # alias: q = p   (state is copied if it is NULL / freed / stack, else both untracked)
                     ordered_ops.append(("USE", src, line))
-                    ptr_ops.append(("ESCAPE", src, line))
-                    ptr_ops.append(("ASSIGN_OTHER", var, line))
+                    ptr_ops.append((f"ALIAS@{src}", var, line))
                     return
                 self.visit(rv)
                 ptr_ops.append(("ASSIGN_OTHER", var, line))
@@ -864,7 +879,7 @@ class _DeclFinder(c_ast.NodeVisitor):
         self.locals.add(n.name)
         if isinstance(n.type, c_ast.PtrDecl):
             self.ptr_vars.add(n.name)
-        if isinstance(n.type, c_ast.ArrayDecl) and "static" not in (n.storage or []):
+        if isinstance(n.type, c_ast.ArrayDecl):
             self.array_vars.add(n.name)
         storage = set(n.storage or [])
         plain = isinstance(n.type, (c_ast.PtrDecl,)) or (

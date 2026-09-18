@@ -57,6 +57,11 @@ UNSAFE_C_DETAILS = {
         "reason": "a memory access was proven to be out of bounds.",
         "fix": "Bound every index and copy length by the destination buffer size.",
     },
+    "uninit_read": {
+        "severity": "MEDIUM",
+        "reason": "memory is read before anything was written to it.",
+        "fix": "Initialise the buffer (calloc, memset, or an initialiser) before reading it.",
+    },
     "format_string": {
         "severity": "HIGH",
         "reason": "the format string is not a literal — attacker-controlled specifiers (%s, %n) allow memory "
@@ -117,6 +122,16 @@ def detect_unsafe_functions(parse_result: Dict[str, Any]) -> Dict[str, Any]:
         detail = UNSAFE_C_DETAILS.get(func)
         if detail:
             shown = call.get("callee") or func
+            if func == "uninit_read":
+                issues.append({
+                    "type": "UNINITIALIZED_VARIABLE",
+                    "severity": call.get("severity", detail["severity"]),
+                    "line": call.get("line", 0),
+                    "function": func,
+                    "message": f"Uninitialized memory at line {call.get('line', '?')}: {call.get('reason', detail['reason'])}",
+                    "suggestion": detail["fix"],
+                })
+                continue
             if func == "buffer_overflow":
                 # the bounds checker already produced a precise severity and explanation
                 issues.append({

@@ -89,7 +89,8 @@ def make_composites(juliet: List[dict], n: int, rng: random.Random) -> List[dict
             rng.shuffle(parts)
             uniq = []
             for i, p in enumerate(parts):
-                uniq.append(re.sub(r"\bfn_(\d+)\b", lambda m, i=i: f"fn_{i}_{m.group(1)}", p))
+                # main function `fn_<n>` and its helpers `fn_<n>_<k>` become `fn_<i>_<n>[_<k>]`: unique per part
+                uniq.append(re.sub(r"\bfn_(\d+)((?:_\d+)?)\b", lambda m, i=i: f"fn_{i}_{m.group(1)}{m.group(2)}", p))
             if lang == "C":
                 src = ("#include <stdio.h>\n" + C_STUB_TYPES + "\n" + "\n".join(decls) + "\n\n" + "\n\n".join(uniq) + "\n")
             else:

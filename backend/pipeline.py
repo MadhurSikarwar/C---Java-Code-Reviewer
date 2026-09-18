@@ -195,7 +195,8 @@ def _static_analysis(source: str, language: str, emit) -> Dict[str, Any]:
     if is_c and parse_result.get("analysis_mode") == "ast" and parse_result.get("ast") is not None:
         try:
             cfgs = build_cfg_for_file(parse_result["ast"])
-            p_res = analyze_pointers(cfgs)
+            # pointer/resource states are followed through same-file calls on the analysis copy (parsers/c_inline.py)
+            p_res = analyze_pointers(build_cfg_for_file(parse_result.get("ast_analysis") or parse_result["ast"]))
             d_res = analyze_data_flow(source, cfgs)
             s_res = analyze_smells(source, cfgs)
             c_res = analyze_time_complexity(cfgs)
