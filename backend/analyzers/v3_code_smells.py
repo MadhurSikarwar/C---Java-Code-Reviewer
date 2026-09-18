@@ -6,6 +6,7 @@ and calculates cyclomatic complexity exactly via CFG edges.
 """
 from typing import Dict, Any, List
 import re
+from parsers.text_utils import sanitize
 
 class SmellWarning:
     def __init__(self, issue_type: str, severity: str, message: str, line_no: int = -1):
@@ -43,7 +44,7 @@ def analyze_smells(source: str, cfg_list: List[Dict[str, Any]]) -> Dict[str, Any
         if func_cc > 10:
             warnings.append(SmellWarning(
                 "HIGH_COMPLEXITY",
-                "HIGH" if func_cc > 15 else "MEDIUM",
+                "MEDIUM" if func_cc > 15 else "LOW",
                 f"Function '{cfg.get('function')}' is highly complex (CC = {func_cc}). Break it down.",
                 cfg.get("line", -1)
             ))
@@ -54,19 +55,18 @@ def analyze_smells(source: str, cfg_list: List[Dict[str, Any]]) -> Dict[str, Any
     max_nesting = 0
     max_nesting_line = -1
     current_nesting = 0
-    lines = source.splitlines()
+    lines = sanitize(source).splitlines()
     for i, line in enumerate(lines, 1):
         clean = line.strip()
-        if not clean.startswith('//'):
-            current_nesting += clean.count('{') - clean.count('}')
-            if current_nesting > max_nesting:
-                max_nesting = current_nesting
-                max_nesting_line = i
+        current_nesting += clean.count('{') - clean.count('}')
+        if current_nesting > max_nesting:
+            max_nesting = current_nesting
+            max_nesting_line = i
     
     if max_nesting > 4:
         warnings.append(SmellWarning(
             "DEEP_NESTING",
-            "HIGH" if max_nesting > 5 else "MEDIUM",
+            "MEDIUM" if max_nesting > 5 else "LOW",
             f"Code is deeply nested ({max_nesting} levels). Consider early returns.",
             max_nesting_line
         ))
@@ -87,11 +87,12 @@ def analyze_smells(source: str, cfg_list: List[Dict[str, Any]]) -> Dict[str, Any
                 for target_id, _ in nodes[curr].get("out_edges", []):
                     stack.append(target_id)
                     
-        unreachable = set(nodes.keys()) - visited
+        # Empty join blocks after an if/else whose branches both return are not "code".
+        unreachable = {n for n in set(nodes.keys()) - visited if nodes[n].get("num_stmts", 0) > 0}
         if unreachable:
             warnings.append(SmellWarning(
                 "DEAD_CODE",
-                "MEDIUM",
+                "LOW",
                 f"Function '{cfg.get('function')}' contains {len(unreachable)} entirely unreachable basic block(s).",
                 cfg.get("line", -1)
             ))

@@ -4,6 +4,7 @@ Loads the saved model and runs inference to produce a risk label and score.
 """
 import os
 import sys
+import threading
 import joblib
 import numpy as np
 from typing import Dict, Any, List
@@ -24,17 +25,42 @@ _v3_model  = None  # RF path-sensitive (34 features)
 _v4_model  = None  # Keras DL V4 dedup (36 features)
 _v4_scaler = None
 _label_names = ["Clean", "Moderate Risk", "High Risk"]
+_lock = threading.RLock()   # Keras / sklearn model objects are shared between request threads
+
+from analyzers.issue_taxonomy import NON_SECURITY_TYPES as _NON_SECURITY_TYPES, QUALITY_TYPES as _QUALITY_TYPES
+
+
+def _load_gate() -> str:
+    """Which evidence-gate variant retrain_all.py found best ('high' or 'full'); see model_report.json."""
+    try:
+        import json
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_report.json"), encoding="utf-8") as f:
+            g = json.load(f).get("gate", "full")
+        return g if g in ("high", "full", "calm") else "full"
+    except Exception:
+        return "full"
+
+
+_GATE = _load_gate()
+
+
+def _as_frame(model, X):
+    """sklearn warns when a model fitted on a DataFrame is called with a bare ndarray."""
+    names = getattr(model, "feature_names_in_", None)
+    if names is not None and len(names) == X.shape[1]:
+        import pandas as pd
+        return pd.DataFrame(X, columns=list(names))
+    return X
 
 
 def load_model():
-    """Load the ML model from disk (called once on startup)."""
+    """Load the ML model from disk (called once on startup). Builds the models first on a fresh checkout."""
     global _model
     if _model is not None:
         return
 
     if not os.path.exists(MODEL_PATH):
-        # Train on the fly if model not found
-        print("⚠️  model.pkl not found — training now...")
+        print("⚠️  No trained models found (they are not stored in git) — building them now...")
         _train_model()
 
     _model = joblib.load(MODEL_PATH)
@@ -42,10 +68,9 @@ def load_model():
 
 
 def _train_model():
-    """Train model inline if not pre-built."""
-    train_script = os.path.join(os.path.dirname(__file__), "train.py")
-    import subprocess
-    subprocess.run([sys.executable, train_script], check=True)
+    """Build the models with the honest pipeline (ml/bootstrap.py) — never the old size-only synthetic trainer."""
+    from ml.bootstrap import bootstrap
+    bootstrap()
 
 
 def load_dl_model():
@@ -126,9 +151,19 @@ def load_v4_dl_model():
 
 
 def predict_risk(feature_vector: List[float], model_type: str = "v3", issues: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Thread-safe entry point (see `_predict_risk`)."""
+    with _lock:
+        return _predict_risk(feature_vector, model_type, issues)
+
+
+def _predict_risk(feature_vector: List[float], model_type: str = "v3", issues: List[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Given a feature vector, return risk label, score 0–100, and per-class probabilities.
     model_type: 'dl', 'v3', 'ensemble', 'v4_dl', or 'all'.
+
+    The rule engine's evidence gates the model: a model alone may not call code "High Risk" unless a
+    critical/high-severity *security* finding backs it up, and such a finding always makes the verdict High. With the
+    "full" gate variant (chosen by ml/retrain_all.py when it measures better) medium findings also rule out "Clean". (Models trained on code-size statistics used to call every large, correct program High Risk.)
     """
     ALL_MODELS = ["ensemble", "dl", "v3", "v4_dl"]
     models_to_run = ALL_MODELS if model_type == "all" else [model_type]
@@ -181,8 +216,8 @@ def predict_risk(feature_vector: List[float], model_type: str = "v3", issues: Li
             elif X_v3.shape[1] > target_feats:
                 X_v3 = X_v3[:, :target_feats]
                 
-            label_idx = int(_v3_model.predict(X_v3)[0])
-            try: proba = _v3_model.predict_proba(X_v3)[0].tolist()
+            label_idx = int(_v3_model.predict(_as_frame(_v3_model, X_v3))[0])
+            try: proba = _v3_model.predict_proba(_as_frame(_v3_model, X_v3))[0].tolist()
             except AttributeError:
                 proba = [0.0, 0.0, 0.0]
                 proba[label_idx] = 1.0
@@ -211,36 +246,49 @@ def predict_risk(feature_vector: List[float], model_type: str = "v3", issues: Li
             if _model is None: load_model()
             if _model is None: continue
             
-            label_idx = int(_model.predict(X_classic)[0])
-            try: proba = _model.predict_proba(X_classic)[0].tolist()
+            label_idx = int(_model.predict(_as_frame(_model, X_classic))[0])
+            try: proba = _model.predict_proba(_as_frame(_model, X_classic))[0].tolist()
             except AttributeError:
                 proba = [0.0, 0.0, 0.0]
                 proba[label_idx] = 1.0
 
-        # --- GENERATION 4 HARD OVERRIDE LOGIC & CONFIDENCE CALIBRATION ---
+        # --- EVIDENCE GATING & CONFIDENCE CALIBRATION ---
         confidence = float(np.max(proba) * 100)
         explanations = []
         is_hard_override = False
-        
-        # Penalize confidence for untracked global states (index 30 = global_mutations out of 34 total config)
-        if len(feature_vector) > 30 and feature_vector[30] > 0:
-            penalty = min(25.0, feature_vector[30] * 5.0)
-            confidence = max(15.0, confidence - penalty)
-            explanations.append(f"Confidence penalized by {penalty}% due to dynamic pointer states escaping CFG tracking bounds.")
-            
-        if len(feature_vector) > 28 and feature_vector[28] > 20: # deep complexity
-            confidence -= 10.0
-            explanations.append("Maximal Cyclomatic Complexity limits branch prediction bounds accuracy.")
 
-        if issues:
-            has_critical = any(i.get("severity") in ("CRITICAL", "HIGH") for i in issues)
-            if has_critical and label_idx < 2:
-                print(f"⚠️ [Hard Override] Rule Engine found Critical issues. Overriding ML prediction.")
-                label_idx = 2
-                proba = [0.0, 0.1, 0.9]
-                confidence = 100.0
-                is_hard_override = True
-                explanations.append("Prediction Hard-Overridden to HIGH RISK: Critical Rule-Engine violations (e.g. Memory Leak, Use-After-Free) detected natively.")
+        if len(feature_vector) > 29 and feature_vector[29] > 20:  # V3 cyclomatic complexity
+            confidence -= 10.0
+            explanations.append("Very high cyclomatic complexity limits how reliably branch behaviour can be predicted.")
+
+        issues = issues or []
+        high_evidence = [i for i in issues
+                         if i.get("severity") in ("CRITICAL", "HIGH") and i.get("type") not in _NON_SECURITY_TYPES]
+        any_evidence = [i for i in issues
+                        if i.get("severity") in ("CRITICAL", "HIGH", "MEDIUM") and i.get("type") not in _QUALITY_TYPES]
+
+        if high_evidence and label_idx < 2:
+            label_idx = 2
+            proba = [0.0, 0.1, 0.9]
+            confidence = 100.0
+            is_hard_override = True
+            explanations.append("Raised to HIGH RISK: the rule engine found critical/high-severity defects "
+                                "(" + ", ".join(sorted({i.get("type", "?") for i in high_evidence})) + ").")
+        elif not high_evidence and label_idx == 2:
+            label_idx = 1
+            proba = [proba[0], proba[1] + proba[2], 0.0]
+            explanations.append("Capped at MODERATE RISK: the model reacted to size/complexity statistics, but no "
+                                "critical or high-severity defect was found.")
+        if _GATE == "calm" and not any_evidence and not high_evidence and label_idx == 1:
+            label_idx = 0
+            proba = [proba[0] + proba[1], 0.0, proba[2]]
+            explanations.append("Kept Clean: the model leaned Moderate, but nothing concrete was found to point at.")
+        if _GATE != "full" or (not any_evidence and not high_evidence):
+            pass
+        elif label_idx == 0:
+            label_idx = 1
+            proba = [0.0, max(proba[1], 0.5), proba[2]]
+            explanations.append("Raised to MODERATE RISK: medium-severity findings were reported.")
 
         label = _label_names[label_idx]
         risk_score = _compute_risk_score(label_idx, proba, feature_vector[:21], m_type)

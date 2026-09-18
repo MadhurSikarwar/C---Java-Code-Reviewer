@@ -39,3 +39,8 @@ build/
 
 # Build Artefacts
 *.egg-info/
+
+# Scratch + downloaded/derived training data
+.scratch/
+backend/ml/data/
+*.jsonl

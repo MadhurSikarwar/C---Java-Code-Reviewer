@@ -1,3 +1,6 @@
+"""NOTE: only FEATURE_NAMES / LABEL_MAP from this module are still used (single source of truth for the feature layout).
+The data generator below is legacy: it produced size-only blobs and must not be used for training (see ml/legacy/README.md).
+"""
 """
 IntelliReview — Synthetic Training Data Generator  (ULTRA-ACCURACY VERSION)
 19 total features: 13 original + 2 engineered ratios + 6 new code-quality signals.

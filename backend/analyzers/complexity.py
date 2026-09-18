@@ -8,11 +8,9 @@ from typing import Dict, Any, List
 
 # Decision keywords that increase cyclomatic complexity
 DECISION_KEYWORDS_C = re.compile(
-    r'\b(if|else\s+if|for|while|do|case|catch|&&|\|\|)\b'
+    r'\b(?:if|for|while|case|catch)\b|&&|\|\||\?'
 )
-DECISION_KEYWORDS_JAVA = re.compile(
-    r'\b(if|else\s+if|for|while|do|case|catch|&&|\|\|)\b'
-)
+DECISION_KEYWORDS_JAVA = DECISION_KEYWORDS_C
 
 TIME_COMPLEXITY_MAP = {
     0: "O(1)",
@@ -66,7 +64,7 @@ def analyze_complexity(parse_result: Dict[str, Any], source: str) -> Dict[str, A
             if cc > 10:
                 issues.append({
                     "type": "HIGH_COMPLEXITY",
-                    "severity": "HIGH" if cc > 15 else "MEDIUM",
+                    "severity": "MEDIUM" if cc > 15 else "LOW",
                     "function": func["name"],
                     "line": func_start,
                     "cc": cc,
@@ -101,7 +99,7 @@ def analyze_complexity(parse_result: Dict[str, Any], source: str) -> Dict[str, A
     if depth >= 3:
         issues.append({
             "type": "DEEP_NESTING",
-            "severity": "HIGH" if depth >= 4 else "MEDIUM",
+            "severity": "MEDIUM" if depth >= 4 else "LOW",
             "line": 0,
             "message": (
                 f"Maximum loop nesting depth of {depth} detected. "

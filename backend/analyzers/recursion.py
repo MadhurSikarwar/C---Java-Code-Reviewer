@@ -5,6 +5,8 @@ Detects recursive functions and classifies them as Linear or Exponential using C
 import re
 from typing import Dict, Any, List
 
+from parsers.text_utils import sanitize
+
 def detect_recursion(parse_result: Dict[str, Any], source: str = "", cfgs: List[Dict[str, Any]] = None) -> Dict[str, Any]:
     functions = parse_result.get("functions", [])
     language = parse_result.get("language", "C")
@@ -13,7 +15,8 @@ def detect_recursion(parse_result: Dict[str, Any], source: str = "", cfgs: List[
     if not source:
         return {"recursion_count": 0, "recursive_functions": [], "issues": []}
 
-    lines = source.splitlines()
+    # Scan code only: a comment or string literal that mentions the function's name is not a recursive call.
+    lines = sanitize(source, java_text_blocks=(language != "C")).splitlines()
     
     # 1. Fallback Heuristic Execution (if CFGs unavailable)
     if cfgs is None:
@@ -38,7 +41,7 @@ def detect_recursion(parse_result: Dict[str, Any], source: str = "", cfgs: List[
             if found_self_call:
                 issues.append({
                     "type": "RECURSION",
-                    "severity": "MEDIUM",
+                    "severity": "LOW",
                     "function": name,
                     "line": func_line,
                     "call_line": call_line,
@@ -64,10 +67,10 @@ def detect_recursion(parse_result: Dict[str, Any], source: str = "", cfgs: List[
             call_line = func.get("line", 0) + 1 # Fallback approximation
             
             if self_calls > 1:
-                severity = "CRITICAL"
+                severity = "MEDIUM"
                 msg = f"Exponential Recursion: Function `{name}` evaluates itself {self_calls} times per frame! This scales O(C^N) and guarantees Stack Overflows on minimal inputs."
             else:
-                severity = "HIGH"
+                severity = "LOW"
                 msg = f"Linear Recursion: Function `{name}` evaluates itself recursively. Track depth manually to prevent Stack Overflow bounds."
                 
             issues.append({

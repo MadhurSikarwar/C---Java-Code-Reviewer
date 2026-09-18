@@ -1,7 +1,8 @@
 """
 IntelliReview — Unsafe Function Detector
-Flags usage of dangerous C/Java functions that can cause buffer overflows,
-command injection, or other security vulnerabilities.
+Flags usage of dangerous C functions that can cause buffer overflows, format-string bugs,
+or command injection. (Java findings come from analyzers/java_security.py, which needs
+argument/taint analysis rather than a list of method names.)
 """
 from typing import Dict, Any, List
 
@@ -41,28 +42,64 @@ UNSAFE_C_DETAILS = {
         "reason": "memcpy() with unvalidated sizes risks out-of-bounds write.",
         "fix": "Always validate that size <= destination buffer size.",
     },
+    "memmove": {
+        "severity": "MEDIUM",
+        "reason": "memmove() with unvalidated sizes risks out-of-bounds write.",
+        "fix": "Always validate that size <= destination buffer size.",
+    },
     "strncpy": {
         "severity": "LOW",
         "reason": "strncpy() may not null-terminate if source is too long.",
         "fix": "Always manually null-terminate: buf[size-1] = '\\0';",
     },
-}
-
-UNSAFE_JAVA_DETAILS = {
-    "exec": {
+    "buffer_overflow": {
         "severity": "HIGH",
-        "reason": "Runtime.exec() with user input enables OS command injection.",
-        "fix": "Use ProcessBuilder with a whitelist of allowed commands.",
+        "reason": "a memory access was proven to be out of bounds.",
+        "fix": "Bound every index and copy length by the destination buffer size.",
     },
-    "eval": {
+    "format_string": {
         "severity": "HIGH",
-        "reason": "Dynamic code evaluation can lead to code injection.",
-        "fix": "Avoid eval(); use a safe parser or scripting API.",
+        "reason": "the format string is not a literal — attacker-controlled specifiers (%s, %n) allow memory "
+                  "reads/writes (CWE-134).",
+        "fix": "Use a constant format string: printf(\"%s\", value) instead of printf(value).",
     },
-    "readLine": {
-        "severity": "LOW",
-        "reason": "Unvalidated user input from readLine() can cause injection attacks.",
-        "fix": "Always validate and sanitize input from readLine().",
+    "system": {
+        "severity": "HIGH",
+        "reason": "system() with a non-constant command allows OS command injection.",
+        "fix": "Avoid system(); use execve() with a fixed argument vector and validate all inputs.",
+    },
+    "popen": {
+        "severity": "HIGH",
+        "reason": "popen() with a non-constant command allows OS command injection.",
+        "fix": "Avoid popen() with user data; use fork/execve with a fixed argument vector.",
+    },
+    "execl": {"severity": "HIGH", "reason": "exec*() with a non-constant path/argument allows command injection.",
+              "fix": "Validate the program path against a whitelist."},
+    "execlp": {"severity": "HIGH", "reason": "exec*() with a non-constant path/argument allows command injection.",
+               "fix": "Validate the program path against a whitelist."},
+    "execv": {"severity": "HIGH", "reason": "exec*() with a non-constant path/argument allows command injection.",
+              "fix": "Validate the program path against a whitelist."},
+    "execvp": {"severity": "HIGH", "reason": "exec*() with a non-constant path/argument allows command injection.",
+               "fix": "Validate the program path against a whitelist."},
+    "tmpnam": {
+        "severity": "MEDIUM",
+        "reason": "tmpnam() returns a predictable name (race condition, CWE-377).",
+        "fix": "Use mkstemp().",
+    },
+    "mktemp": {
+        "severity": "MEDIUM",
+        "reason": "mktemp() is vulnerable to race conditions (CWE-377).",
+        "fix": "Use mkstemp().",
+    },
+    "alloca": {
+        "severity": "MEDIUM",
+        "reason": "alloca() has no failure indication and can overflow the stack.",
+        "fix": "Use a fixed-size buffer or malloc().",
+    },
+    "getwd": {
+        "severity": "HIGH",
+        "reason": "getwd() cannot bound the size of the output buffer.",
+        "fix": "Use getcwd(buf, size).",
     },
 }
 
@@ -72,32 +109,36 @@ def detect_unsafe_functions(parse_result: Dict[str, Any]) -> Dict[str, Any]:
     Collect unsafe function usage from the parse result and enrich with
     detailed severity, reason, and fix suggestions.
     """
-    language = parse_result.get("language", "C")
     raw_unsafe = parse_result.get("unsafe_calls", [])
-    reference = UNSAFE_C_DETAILS if language == "C" else UNSAFE_JAVA_DETAILS
 
-    issues = []
+    issues: List[Dict[str, Any]] = []
     for call in raw_unsafe:
         func = call.get("function", "")
-        # Match exact name or starts with name (Java method calls with class prefix)
-        matched_key = None
-        for key in reference:
-            if func == key or func.endswith(f".{key}") or key in func:
-                matched_key = key
-                break
-
-        if matched_key:
-            detail = reference[matched_key]
+        detail = UNSAFE_C_DETAILS.get(func)
+        if detail:
+            shown = call.get("callee") or func
+            if func == "buffer_overflow":
+                # the bounds checker already produced a precise severity and explanation
+                issues.append({
+                    "type": "BUFFER_OVERFLOW",
+                    "severity": call.get("severity", detail["severity"]),
+                    "line": call.get("line", 0),
+                    "function": func,
+                    "message": f"Buffer overflow at line {call.get('line', '?')}: {call.get('reason', detail['reason'])}",
+                    "suggestion": detail["fix"],
+                })
+                continue
             issues.append({
-                "type": "UNSAFE_FUNCTION",
-                "severity": detail["severity"],
+                "type": "FORMAT_STRING" if func == "format_string" else "UNSAFE_FUNCTION",
+                # the parser may already have judged the call more precisely (e.g. a string copy that provably
+                # overflows its destination is CRITICAL, a printf wrapper is LOW); the parser's judgement wins
+                "severity": call.get("severity") if call.get("severity") in ("CRITICAL", "MEDIUM", "LOW") else detail["severity"],
                 "line": call.get("line", 0),
                 "function": func,
-                "message": f"Unsafe use of `{func}` at line {call.get('line', '?')}: {detail['reason']}",
+                "message": f"Unsafe use of `{shown}` at line {call.get('line', '?')}: {detail['reason']}",
                 "suggestion": detail["fix"],
             })
         else:
-            # Pass through with generic message
             issues.append({
                 "type": "UNSAFE_FUNCTION",
                 "severity": call.get("severity", "MEDIUM"),

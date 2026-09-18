@@ -6,6 +6,8 @@ Falls back to regex-based analysis if javalang fails.
 import re
 from typing import Dict, Any
 
+from parsers.text_utils import sanitize
+
 
 def parse_java_code(source: str) -> Dict[str, Any]:
     """
@@ -32,12 +34,14 @@ def parse_java_code(source: str) -> Dict[str, Any]:
     }
 
     lines = source.splitlines()
-    result["lines_of_code"] = sum(1 for l in lines if l.strip() and not l.strip().startswith("//"))
+    result["lines_of_code"] = sum(1 for l in sanitize(source, java_text_blocks=True).splitlines() if l.strip())
+    result["analysis_mode"] = "ast"
 
     try:
         result.update(_parse_with_javalang(source, lines))
-    except Exception as e:
-        result["parse_errors"].append(f"javalang: {str(e)}")
+    except Exception as e:  # javalang raises its own error types and RecursionError on deep input
+        result["parse_errors"].append(f"javalang: {str(e)[:200]}")
+        result["analysis_mode"] = "heuristic"
         result.update(_parse_java_with_regex(source, lines))
 
     return result
@@ -56,12 +60,8 @@ def _parse_with_javalang(source: str, lines) -> Dict[str, Any]:
     unsafe_calls = []
     max_loop_depth = 0
 
-    # Java unsafe patterns
-    UNSAFE_JAVA = {
-        "exec": "Runtime.exec() — OS command injection risk",
-        "eval": "Potential code injection",
-        "readLine": "Unvalidated input — potential injection",
-    }
+    # Injection / unsafe-API detection lives in analyzers/java_security.py (it needs argument analysis:
+    # Runtime.exec("ls") is fine, Runtime.exec(userInput) is not).
 
     def walk(node, loop_depth=0):
         nonlocal num_loops, num_conditionals, max_loop_depth
@@ -73,10 +73,9 @@ def _parse_with_javalang(source: str, lines) -> Dict[str, Any]:
             line = node.position.line if node.position else 0
             functions.append({"name": node.name, "line": line})
 
-        elif isinstance(node, (javalang.tree.ForStatement,
+        elif isinstance(node, (javalang.tree.ForStatement,      # also covers for-each (EnhancedForControl)
                                javalang.tree.WhileStatement,
-                               javalang.tree.DoStatement,
-                               javalang.tree.EnhancedForStatement)):
+                               javalang.tree.DoStatement)):
             num_loops += 1
             new_depth = loop_depth + 1
             max_loop_depth = max(max_loop_depth, new_depth)
@@ -89,23 +88,6 @@ def _parse_with_javalang(source: str, lines) -> Dict[str, Any]:
         elif isinstance(node, javalang.tree.MethodInvocation):
             if node.member:
                 function_calls.add(node.member)
-                if node.member in UNSAFE_JAVA:
-                    line = node.position.line if node.position else 0
-                    unsafe_calls.append({
-                        "function": node.member,
-                        "line": line,
-                        "severity": "HIGH",
-                        "reason": UNSAFE_JAVA[node.member],
-                    })
-
-                # String concatenation in loops (potential O(n²))
-                if node.member == "concat" and loop_depth > 0:
-                    unsafe_calls.append({
-                        "function": "String.concat() inside loop",
-                        "line": node.position.line if node.position else 0,
-                        "severity": "MEDIUM",
-                        "reason": "Use StringBuilder instead of string concatenation in loops",
-                    })
 
         _walk_children(node, loop_depth)
 
@@ -140,7 +122,8 @@ def _parse_with_javalang(source: str, lines) -> Dict[str, Any]:
 
 
 def _parse_java_with_regex(source: str, lines) -> Dict[str, Any]:
-    """Fallback regex-based Java parser."""
+    """Fallback regex-based Java parser (runs on comment/string-free text)."""
+    lines = sanitize(source, java_text_blocks=True).splitlines()
     functions = []
     for i, line in enumerate(lines, 1):
         if re.search(r'\b(public|private|protected|static).*\w+\s+\w+\s*\(', line):
@@ -158,13 +141,8 @@ def _parse_java_with_regex(source: str, lines) -> Dict[str, Any]:
 
     num_conditionals = sum(1 for l in lines if re.search(r'\b(if|switch)\b', l))
 
-    all_calls = set(re.findall(r'\.(\w+)\s*\(', source))
-    unsafe_funcs = {"exec", "eval", "readLine"}
+    all_calls = set(re.findall(r'\.(\w+)\s*\(', sanitize(source, java_text_blocks=True)))
     unsafe_calls = []
-    for i, l in enumerate(lines, 1):
-        for f in unsafe_funcs:
-            if re.search(rf'\.{f}\s*\(', l):
-                unsafe_calls.append({"function": f, "line": i, "severity": "HIGH"})
 
     return {
         "functions": functions,

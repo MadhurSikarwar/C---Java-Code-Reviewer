@@ -40,9 +40,9 @@ def analyze_time_complexity(cfg_list: List[Dict[str, Any]]) -> Dict[str, Any]:
             # A 'loop_back' edge essentially signifies the end of a loop body.
             # In a full DOM tree we'd count dominators. Here we check naming conventions from v3_cfg_builder.
             name = node.get("name", "")
-            if "For Exit" in name or "While Exit" in name:
+            if "For Exit" in name or "While Exit" in name or "DoWhile Exit" in name:
                 current_depth = max(0, current_depth - 1)
-            elif "For Cond" in name or "While Cond" in name:
+            elif "For Cond" in name or "While Cond" in name or "DoWhile Cond" in name:
                 current_depth += 1
                 total_loops += 1
                 loop_depths.append(current_depth)

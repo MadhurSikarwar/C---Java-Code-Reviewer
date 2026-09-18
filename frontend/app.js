@@ -1,29 +1,36 @@
-/**
- * IntelliReview — Frontend Application Logic
- * Handles: code editor, API calls, risk gauge, Chart.js complexity chart, Mermaid graph
- */
+/* IntelliReview — front end.
+   One sheet of code on the left, the reviewer's margin on the right. No framework, no chart library. */
+'use strict';
 
-// Dynamically determine API base URL for better cross-platform compatibility
-const API_BASE = (() => {
-  // If we're being served from the backend, use relative paths
-  if (typeof window !== 'undefined' && window.location.hostname) {
-    const protocol = window.location.protocol;
-    const hostname = window.location.hostname;
-    const port = window.location.port ? ':' + window.location.port : '';
-    return `${protocol}//${hostname}${port}`;
-  }
-  return 'http://localhost:8000';
-})();
+const API_BASE = location.protocol.startsWith('http') ? '' : 'http://127.0.0.1:8000';
+const $ = id => document.getElementById(id);
 
-// ── State ──────────────────────────────────────────────────────────────
-let currentLanguage = 'C';
-let complexityChart = null;
-let currentResults = null;
-let currentIssueFilter = 'ALL';
+// ─────────────────────────────────────────────────────────── state
+const state = {
+  lang: 'C',
+  langPinned: false,        // the user chose a language by hand, so stop guessing it
+  model: 'v3',
+  data: null,               // last response
+  code: '',                 // the code that response is about
+  view: null,               // which model's verdict is on screen (compare mode)
+  filter: 'ALL',
+  reading: false,
+  timers: [],
+};
 
-// ── Sample Code ────────────────────────────────────────────────────────
+const SEV = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+const SEV_LABEL = { CRITICAL: 'Critical', HIGH: 'High', MEDIUM: 'Medium', LOW: 'Low' };
+const LEVEL = { 'Clean': 0, 'Moderate Risk': 1, 'High Risk': 2 };
+const LEVEL_TEXT = ['Clean', 'Moderate risk', 'High risk'];
+const MODEL_NAME = {
+  v3: 'V3 · path-sensitive forest', v4_dl: 'V4 · neural net, all features',
+  ensemble: 'Boosted ensemble', dl: 'DL V1 · neural net, classic',
+};
+const MODEL_SHORT = { v3: 'V3', v4_dl: 'V4', ensemble: 'Ensemble', dl: 'DL V1' };
+
+// ─────────────────────────────────────────────────────────── examples
 const SAMPLES = {
-  C: `#include <stdio.h>
+  'C': `#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -36,7 +43,7 @@ int findMax(int *arr, int n) {
     return max;
 }
 
-/* Bubble sort — O(n^2) */
+/* Bubble sort */
 void bubbleSort(int *arr, int n) {
     for (int i = 0; i < n - 1; i++) {
         for (int j = 0; j < n - i - 1; j++) {
@@ -49,14 +56,12 @@ void bubbleSort(int *arr, int n) {
     }
 }
 
-/* Reads user name — UNSAFE */
 void readName(char *buf) {
-    gets(buf);  /* dangerous! */
+    gets(buf);
 }
 
 int main() {
     int *data = malloc(100 * sizeof(int));
-    /* NOTE: no free() — memory leak */
     for (int i = 0; i < 100; i++) data[i] = rand() % 1000;
     bubbleSort(data, 100);
     printf("Max: %d\\n", findMax(data, 100));
@@ -66,862 +71,573 @@ int main() {
     printf("Hello, %s\\n", name);
     return 0;
 }`,
+  'C++': `#include <iostream>
+#include <vector>
 
-  Java: `import java.util.ArrayList;
-import java.util.Scanner;
+class Buffer {
+    int *cells;
+public:
+    Buffer(int n) { cells = new int[n]; }
+    int at(int i) const { return cells[i]; }
+};
 
-public class DataProcessor {
+int main() {
+    Buffer *b = new Buffer(64);
+    std::cout << b->at(3) << std::endl;
+    return 0;
+}`,
+  'Java': `import java.sql.*;
+import java.io.*;
 
-    // Fibonacci — recursive
+public class Accounts {
+
+    // Looks a user up by whatever name the caller typed.
+    public static int findUser(Connection db) throws Exception {
+        BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
+        String name = in.readLine();
+        Statement st = db.createStatement();
+        ResultSet rs = st.executeQuery("SELECT id FROM users WHERE name = '" + name + "'");
+        return rs.next() ? rs.getInt(1) : -1;
+    }
+
     public static int fibonacci(int n) {
         if (n <= 1) return n;
         return fibonacci(n - 1) + fibonacci(n - 2);
     }
 
-    // Find all pairs summing to target — O(n^2)
-    public static ArrayList<int[]> findPairs(int[] arr, int target) {
-        ArrayList<int[]> result = new ArrayList<>();
-        for (int i = 0; i < arr.length; i++) {
-            for (int j = i + 1; j < arr.length; j++) {
-                if (arr[i] + arr[j] == target) {
-                    if (arr[i] > 0) {
-                        if (arr[j] > 0) {
-                            result.add(new int[]{arr[i], arr[j]});
-                        }
-                    }
-                }
-            }
-        }
-        return result;
-    }
-
-    // Build string in loop — inefficient
-    public static String buildReport(String[] items) {
-        String report = "";
-        for (String item : items) {
-            report = report.concat(item + "\\n");
-        }
-        return report;
-    }
-
-    public static void main(String[] args) {
-        Scanner sc = new Scanner(System.in);
-        int[] data = {3, 5, 1, 8, 2, 9, 4, 7, 6};
-        System.out.println("Pairs: " + findPairs(data, 10));
-        System.out.println("Fib(10): " + fibonacci(10));
-        System.out.println(buildReport(new String[]{"a","b","c"}));
+    public static void main(String[] args) throws Exception {
+        System.out.println(fibonacci(10));
     }
 }`,
 };
 
-// ── DOM References ─────────────────────────────────────────────────────
-const $ = id => document.getElementById(id);
-const codeEditor = $('code-editor');
-const lineNumbers = $('line-numbers');
+// ─────────────────────────────────────────────────────────── elements
+const editor = $('code-editor');
+const gutter = $('gutter');
+const listing = $('listing');
+const sheet = $('sheet');
 const analyzeBtn = $('analyze-btn');
-const fileInput = $('file-input');
-const dropzone = $('dropzone');
 
-// State panels
-const emptyState = $('empty-state');
-const loadingState = $('loading-state');
-const resultsContent = $('results-content');
-const errorState = $('error-state');
-
-// ── Language Toggle ────────────────────────────────────────────────────
-document.querySelectorAll('.lang-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    currentLanguage = btn.dataset.lang;
-    $('editor-lang-indicator').textContent = currentLanguage;
-  });
-});
-
-// ── Editor Line Numbers ────────────────────────────────────────────────
-function updateLineNumbers() {
-  const lines = codeEditor.value.split('\n');
-  lineNumbers.textContent = lines.map((_, i) => i + 1).join('\n');
-  $('line-count').textContent = `${lines.length} lines`;
-  $('char-count').textContent = `${codeEditor.value.length} chars`;
+// ─────────────────────────────────────────────────────────── editor
+function refreshEditor() {
+  const n = editor.value === '' ? 0 : editor.value.split('\n').length;
+  let s = '';
+  for (let i = 1; i <= Math.max(n, 1); i++) s += i + '\n';
+  gutter.textContent = s;
+  $('line-count').textContent = `${n} ${n === 1 ? 'line' : 'lines'}`;
+  $('char-count').textContent = `${editor.value.length.toLocaleString()} characters`;
 }
-
-codeEditor.addEventListener('input', updateLineNumbers);
-codeEditor.addEventListener('scroll', () => {
-  lineNumbers.scrollTop = codeEditor.scrollTop;
+editor.addEventListener('input', () => {
+  refreshEditor();
+  if (state.data && !$('results-content').classList.contains('hidden')) {
+    document.querySelector('#verdict .kicker').textContent = 'Verdict · the code has changed since';
+  }
 });
-codeEditor.addEventListener('keydown', e => {
-  const s = codeEditor.selectionStart;
-  const val = codeEditor.value;
-
-  // TAB: Insert 4 spaces
+editor.addEventListener('scroll', () => { gutter.scrollTop = editor.scrollTop; });
+editor.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runAnalysis(); return; }
+  const s = editor.selectionStart, v = editor.value;
   if (e.key === 'Tab') {
     e.preventDefault();
-    codeEditor.value = val.substring(0, s) + '    ' + val.substring(codeEditor.selectionEnd);
-    codeEditor.selectionStart = codeEditor.selectionEnd = s + 4;
-    updateLineNumbers();
-  }
-
-  // Auto-indent on Enter
-  if (e.key === 'Enter') {
+    document.execCommand ? document.execCommand('insertText', false, '    ') : (editor.setRangeText('    ', s, editor.selectionEnd, 'end'));
+    refreshEditor();
+  } else if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    // Find indentation of current line
-    const currentLineStart = val.lastIndexOf('\n', s - 1) + 1;
-    const currentLine = val.substring(currentLineStart, s);
-    const indentMatch = currentLine.match(/^\s*/);
-    let indent = indentMatch ? indentMatch[0] : '';
-
-    // If the previous character was an opening brace/bracket, add extra indent
-    if (val[s - 1] === '{' || val[s - 1] === '(' || val[s - 1] === '[') {
-      indent += '    ';
-    }
-
-    codeEditor.value = val.substring(0, s) + '\n' + indent + val.substring(codeEditor.selectionEnd);
-    codeEditor.selectionStart = codeEditor.selectionEnd = s + 1 + indent.length;
-
-    // Auto-close brace behavior (optional UX)
-    if (val[s - 1] === '{' && val.substring(s).trim().startsWith('}')) {
-      // if they press enter between {}
-      const pre = codeEditor.value.substring(0, codeEditor.selectionStart);
-      const post = codeEditor.value.substring(codeEditor.selectionEnd);
-      const unindent = indent.substring(0, indent.length - 4);
-      codeEditor.value = pre + '\n' + unindent + post;
-      codeEditor.selectionStart = codeEditor.selectionEnd = pre.length;
-    }
-
-    updateLineNumbers();
+    const lineStart = v.lastIndexOf('\n', s - 1) + 1;
+    let indent = (v.slice(lineStart, s).match(/^[ \t]*/) || [''])[0];
+    const opened = /[{(\[]$/.test(v.slice(lineStart, s).trimEnd());
+    if (opened) indent += '    ';
+    document.execCommand ? document.execCommand('insertText', false, '\n' + indent) : editor.setRangeText('\n' + indent, s, editor.selectionEnd, 'end');
+    refreshEditor();
   }
 });
-updateLineNumbers();
-
-// ── Clear & Sample ─────────────────────────────────────────────────────
-$('btn-clear').addEventListener('click', () => {
-  codeEditor.value = '';
-  updateLineNumbers();
-});
-$('btn-sample').addEventListener('click', () => {
-  codeEditor.value = SAMPLES[currentLanguage];
-  updateLineNumbers();
+editor.addEventListener('paste', () => setTimeout(() => { refreshEditor(); guessLanguage(); }, 0));
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && document.activeElement !== editor) { e.preventDefault(); runAnalysis(); }
 });
 
-// ── File Upload ────────────────────────────────────────────────────────
-function loadFileIntoEditor(file, autoAnalyze = false) {
-  if (!file) return;
-  const ext = file.name.split('.').pop().toLowerCase();
+// ─────────────────────────────────────────────────────────── language & model
+function setLang(lang, byHand) {
+  state.lang = lang;
+  if (byHand) state.langPinned = true;
+  document.querySelectorAll('#langs button').forEach(b => {
+    const on = b.dataset.lang === lang;
+    b.classList.toggle('is-on', on);
+    b.setAttribute('aria-pressed', on);
+  });
+}
+document.querySelectorAll('#langs button').forEach(b => b.addEventListener('click', () => setLang(b.dataset.lang, true)));
 
-  // Auto-detect language from extension
-  if (ext === 'java') {
-    currentLanguage = 'Java';
-    document.querySelectorAll('.lang-btn').forEach(b =>
-      b.classList.toggle('active', b.dataset.lang === 'Java')
-    );
-    $('editor-lang-indicator').textContent = 'Java';
-  } else {
-    currentLanguage = 'C';
-    document.querySelectorAll('.lang-btn').forEach(b =>
-      b.classList.toggle('active', b.dataset.lang === 'C')
-    );
-    $('editor-lang-indicator').textContent = 'C';
-  }
-
-  const reader = new FileReader();
-  reader.onload = ev => {
-    codeEditor.value = ev.target.result;
-    updateLineNumbers();
-
-    // Show which file was loaded
-    const dropLabel = dropzone.querySelector('p');
-    if (dropLabel) dropLabel.textContent = `✅ ${file.name} loaded`;
-
-    // Auto-analyze after file is fully read
-    if (autoAnalyze) {
-      setTimeout(runAnalysis, 200);
-    }
-  };
-  reader.onerror = () => showError(`Failed to read file: ${file.name}`);
-  reader.readAsText(file);
-
-  // IMPORTANT: Reset input value so same file can be re-selected
-  fileInput.value = '';
+function guessLanguage() {
+  if (state.langPinned) return;
+  const c = editor.value;
+  if (/\b(public|private)\s+(static\s+)?(final\s+)?(class|interface|enum)\b|\bSystem\.out\b|\bimport\s+java\./.test(c)) return setLang('Java');
+  if (/#\s*include\s*<(iostream|vector|string|map|memory|algorithm)>|\bstd::|\btemplate\s*<|\bclass\s+\w+\s*[:{]|\bnullptr\b/.test(c)) return setLang('C++');
+  if (c.trim()) setLang('C');
 }
 
-fileInput.addEventListener('change', e => {
-  loadFileIntoEditor(e.target.files[0], true);   // auto-analyze = true
+$('model-select').addEventListener('change', e => { state.model = e.target.value; });
+
+$('btn-clear').addEventListener('click', () => {
+  leaveListing();
+  editor.value = '';
+  state.langPinned = false;
+  refreshEditor();
+  editor.focus();
+});
+$('btn-sample').addEventListener('click', () => {
+  leaveListing();
+  editor.value = SAMPLES[state.lang];
+  refreshEditor();
+  editor.scrollTop = 0;
 });
 
-// Drag & drop
-dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag-over'); });
-dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
-dropzone.addEventListener('drop', e => {
-  e.preventDefault();
-  dropzone.classList.remove('drag-over');
-  loadFileIntoEditor(e.dataTransfer.files[0], true);  // auto-analyze = true
-});
-dropzone.addEventListener('click', () => fileInput.click());
+// ─────────────────────────────────────────────────────────── files
+function loadFile(file, thenReview) {
+  if (!file) return;
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const byExt = { java: 'Java', cpp: 'C++', cc: 'C++', cxx: 'C++', hpp: 'C++', c: 'C', h: 'C' }[ext];
+  const reader = new FileReader();
+  reader.onload = ev => {
+    leaveListing();
+    editor.value = String(ev.target.result || '');
+    state.langPinned = false;
+    if (byExt) setLang(byExt); else guessLanguage();
+    refreshEditor();
+    editor.scrollTop = 0;
+    if (thenReview) setTimeout(runAnalysis, 120);
+  };
+  reader.onerror = () => showError(`The file “${file.name}” couldn’t be read.`);
+  reader.readAsText(file);
+}
+$('file-input').addEventListener('change', e => { loadFile(e.target.files[0], true); e.target.value = ''; });
+$('open-file').addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('file-input').click(); } });
+['dragenter', 'dragover'].forEach(t => sheet.addEventListener(t, e => { e.preventDefault(); sheet.classList.add('is-drag'); }));
+['dragleave', 'drop'].forEach(t => sheet.addEventListener(t, e => { e.preventDefault(); sheet.classList.remove('is-drag'); }));
+sheet.addEventListener('drop', e => loadFile(e.dataTransfer.files[0], true));
 
-// ── Analyze ────────────────────────────────────────────────────────────
-console.log('🎬 IntelliReview initialized');
-console.log(`Button found: ${analyzeBtn ? 'YES' : 'NO'}`);
-if (analyzeBtn) {
-  analyzeBtn.addEventListener('click', runAnalysis);
-  console.log('✅ Analyze button listener attached');
-} else {
-  console.error('❌ Analyze button (id="analyze-btn") not found!');
+// ─────────────────────────────────────────────────────────── screens in the margin
+const screens = ['empty-state', 'loading-state', 'error-state', 'results-content'];
+function show(id) { screens.forEach(s => $(s).classList.toggle('hidden', s !== id)); }
+
+function showReading() {
+  state.reading = true;
+  sheet.classList.add('is-reading');
+  analyzeBtn.disabled = true;
+  $('analyze-btn-text').textContent = 'Reading…';
+  show('loading-state');
+  const items = [...document.querySelectorAll('#loader-steps li')];
+  items.forEach((li, i) => li.className = i === 0 ? 'is-now' : '');
+  state.timers.forEach(clearTimeout);
+  state.timers = [700, 1500, 2400].map((ms, k) => setTimeout(() => {
+    items.forEach((li, i) => li.className = i < k + 1 ? 'is-done' : i === k + 1 ? 'is-now' : '');
+  }, ms));
+}
+function doneReading() {
+  state.reading = false;
+  state.timers.forEach(clearTimeout);
+  sheet.classList.remove('is-reading');
+  analyzeBtn.disabled = false;
+  $('analyze-btn-text').textContent = state.data && !listing.classList.contains('hidden') ? 'Review again' : 'Review this code';
+}
+function showError(msg) {
+  doneReading();
+  $('error-message').textContent = msg;
+  show('error-state');
 }
 $('retry-btn').addEventListener('click', runAnalysis);
 
+// ─────────────────────────────────────────────────────────── the request
+analyzeBtn.addEventListener('click', runAnalysis);
+
 async function runAnalysis() {
-  console.log('🔘 Analyze button clicked');
+  if (state.reading) return;
+  if (!listing.classList.contains('hidden')) leaveListing();   // "Review again" works on the editor's text
+  const code = editor.value;
+  if (!code.trim()) { showError('There is nothing to review yet. Paste some code, open a file, or load an example.'); return; }
 
-  const code = codeEditor.value.trim();
-  console.log(`📝 Code captured: ${code.length} characters`);
-
-  if (!code) {
-    console.warn('⚠️ No code provided');
-    showError('Please paste or upload some code first.');
-    return;
-  }
-
-  const modelType = $('model-select').value;
-  console.log(`🤖 Model selected: ${modelType}`);
-  console.log(`💬 Language: ${currentLanguage}`);
-  console.log(`🌍 API Base: ${API_BASE}`);
-
-  showLoading();
-
-  // Animate loader steps
-  const steps = document.querySelectorAll('.loader-step');
-  const delays = [0, 800, 1600, 2400];
-  steps.forEach((s, i) => {
-    s.classList.remove('active', 'done');
-    setTimeout(() => {
-      steps.forEach(x => x.classList.remove('active'));
-      s.classList.add('active');
-      if (i > 0) steps[i - 1].classList.add('done');
-    }, delays[i]);
-  });
-
+  showReading();
   try {
-    console.log(`📤 Sending POST request to ${API_BASE}/api/analyze`);
-    const response = await fetch(`${API_BASE}/api/analyze`, {
+    const res = await fetch(`${API_BASE}/api/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, language: currentLanguage, model_type: modelType }),
+      body: JSON.stringify({ code, language: state.lang, model_type: state.model }),
     });
-
-    console.log(`📥 Response status: ${response.status} ${response.statusText}`);
-
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({ detail: 'Server error' }));
-      console.error('❌ Server error:', err);
-      throw new Error(err.detail || `HTTP ${response.status}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const detail = Array.isArray(err.detail)
+        ? err.detail.map(d => (d.msg || '').replace(/^Value error, /, '')).filter(Boolean).join('; ')
+        : err.detail;
+      throw new Error(detail || `The server answered with HTTP ${res.status}.`);
     }
-
-    const data = await response.json();
-    console.log('✅ Analysis completed:', data);
-    currentResults = data;
-    await new Promise(r => setTimeout(r, 400)); // brief pause for final step
-    steps[steps.length - 1].classList.add('done');
-    await new Promise(r => setTimeout(r, 300));
-    renderResults(data);
+    state.data = await res.json();
+    state.code = code;
+    await new Promise(r => setTimeout(r, 350));          // let the last reading step register
+    render(state.data);
   } catch (err) {
-    console.error('💥 Analysis error:', err.message);
-    showError(err.message || 'Could not connect to the backend. Make sure the server is running on port 8000.');
+    const offline = err instanceof TypeError;
+    showError(offline ? 'The engine isn’t answering. Start it with run.bat, then try again.' : err.message);
   }
 }
 
-// ── Download Report ────────────────────────────────────────────────────
-$('download-report-btn').addEventListener('click', () => {
-  if (!currentResults) return;
-
-  const r = currentResults;
-  const metrics = r.metrics;
-  const issues = r.issues || [];
-  const suggestions = (r.suggestions && r.suggestions.suggestions) || [];
-  const modelLabel = $('model-select').options[$('model-select').selectedIndex].text
-    .replace(/[^\u0000-\u007E]/g, '').trim(); // strip emojis
-
-  const SEP = '================================================================';
-  const sec = (title) => `\n${title}\n${'─'.repeat(title.length)}\n`;
-
-  let report = `${SEP}\nINTELLIREVIEW — AI CODE ANALYSIS REPORT\n${SEP}\n`;
-  report += `Language : ${r.language || currentLanguage}\n`;
-  report += `Model    : ${modelLabel}\n`;
-  report += `Generated: ${new Date().toLocaleString()}\n`;
-
-  const hasComparisons = r.risk.comparisons && Object.keys(r.risk.comparisons).length > 1;
-  const MODEL_NAMES = { ensemble: 'Ensemble (LightGBM + XGBoost + ET)', dl: 'DL V1 (19-feat)', v3: 'V3 Path-Sensitive RF', v4_dl: 'V4 Dedup DL (36-feat)' };
-
-  if (hasComparisons) {
-    // ── All-Models Report: full section per model ──────────────────────
-    report += `\n${SEP}\nSECTION 1 — RISK SCORES (ALL MODELS)\n${SEP}\n`;
-    for (const [mType, comp] of Object.entries(r.risk.comparisons)) {
-      const name = MODEL_NAMES[mType] || mType.toUpperCase();
-      report += `\n[ ${name} ]\n`;
-      report += `  Label : ${comp.risk_label}\n`;
-      report += `  Score : ${comp.risk_score}/100\n`;
-      report += `  Confidence : ${comp.confidence ?? '-'}%\n`;
-      const p = comp.probabilities || {};
-      report += `  Probabilities: Clean ${p['Clean'] ?? 0}%  |  Moderate ${p['Moderate Risk'] ?? 0}%  |  High ${p['High Risk'] ?? 0}%\n`;
-      if (comp.explanations && comp.explanations.length) {
-        report += `  Explanation: ${comp.explanations[comp.explanations.length - 1]}\n`;
-      }
-    }
-  } else {
-    // ── Single Model Report ────────────────────────────────────────────
-    report += sec('RISK SCORE');
-    report += `Label : ${r.risk.label}\n`;
-    report += `Score : ${r.risk.score}/100\n`;
-    const p = r.risk.probabilities || {};
-    report += `Probabilities: Clean ${p['Clean'] ?? 0}%  |  Moderate ${p['Moderate Risk'] ?? 0}%  |  High ${p['High Risk'] ?? 0}%\n`;
-  }
-
-  // ── Metrics (always) ────────────────────────────────────────────────
-  report += `\n${SEP}\nSECTION 2 — CODE METRICS\n${SEP}\n`;
-  report += `Lines of Code          : ${metrics.lines_of_code}\n`;
-  report += `Number of Functions    : ${metrics.num_functions}\n`;
-  report += `Cyclomatic Complexity  : ${metrics.cyclomatic_complexity}\n`;
-  report += `Time Complexity        : ${metrics.time_complexity}\n`;
-  report += `Memory Leaks Detected  : ${metrics.memory_leak_count}\n`;
-  report += `Unsafe C Functions     : ${metrics.unsafe_function_count}\n`;
-  report += `Recursion Count        : ${metrics.recursion_count}\n`;
-  report += `\nVulnerability Categories:\n`;
-  report += `  Memory & Pointers    : ${r.risk.categories?.memory || 0}\n`;
-  report += `  Data Flow (SSA)      : ${r.risk.categories?.data_flow || 0}\n`;
-  report += `  Architecture/Smells  : ${r.risk.categories?.architecture || 0}\n`;
-  report += `  Recursion Hazards    : ${r.risk.categories?.recursion || 0}\n`;
-
-  // ── Issues (always) ─────────────────────────────────────────────────
-  report += `\n${SEP}\nSECTION 3 — ISSUES DETECTED (${issues.length})\n${SEP}\n`;
-  if (issues.length === 0) {
-    report += 'No issues detected.\n';
-  } else {
-    issues.forEach((iss, idx) => {
-      report += `\n[${idx + 1}] SEVERITY : ${iss.severity}\n`;
-      if (iss.line) report += `    Line    : ${iss.line}\n`;
-      if (iss.type) report += `    Type    : ${iss.type}\n`;
-      report += `    Message : ${iss.message}\n`;
-      if (iss.suggestion) report += `    Fix     : ${iss.suggestion}\n`;
-    });
-  }
-
-  // ── Suggestions (always) ────────────────────────────────────────────
-  report += `\n${SEP}\nSECTION 4 — IMPROVEMENT SUGGESTIONS (${suggestions.length})\n${SEP}\n`;
-  if (suggestions.length === 0) {
-    report += 'No suggestions.\n';
-  } else {
-    suggestions.forEach((s, idx) => {
-      report += `\n[${idx + 1}] ${s.category} (${s.severity})\n`;
-      report += `    Message    : ${s.message}\n`;
-      report += `    Suggestion : ${s.suggestion}\n`;
-      if (s.example) {
-        report += `    Example:\n`;
-        s.example.split('\n').forEach(l => { report += `      ${l}\n`; });
-      }
-    });
-  }
-
-  // ── Trigger download ────────────────────────────────────────────────
-  const blob = new Blob([report], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `IntelliReview_Report_${Date.now()}.txt`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-});
-
-// ── State Management ───────────────────────────────────────────────────
-function showLoading() {
-  emptyState.classList.add('hidden');
-  errorState.classList.add('hidden');
-  resultsContent.classList.add('hidden');
-  loadingState.classList.remove('hidden');
-  analyzeBtn.classList.add('loading');
-  $('analyze-btn-text') && ($('analyze-btn-text').textContent = 'Analyzing...');
-}
-
-function showError(msg) {
-  emptyState.classList.add('hidden');
-  loadingState.classList.add('hidden');
-  resultsContent.classList.add('hidden');
-  errorState.classList.remove('hidden');
-  $('error-message').textContent = msg;
-  analyzeBtn.classList.remove('loading');
-  $('analyze-btn-text') && ($('analyze-btn-text').textContent = 'Analyze Code');
-}
-
-// ── Render Results ─────────────────────────────────────────────────────
-function renderResults(data) {
-  try {
-    loadingState.classList.add('hidden');
-    analyzeBtn.classList.remove('loading');
-    $('analyze-btn-text') && ($('analyze-btn-text').textContent = 'Analyze Code');
-    resultsContent.classList.remove('hidden');
-
-    if (!data) { showError('Invalid response from server'); return; }
-
-    const { metrics = {}, risk = {}, issues = [], suggestions = {}, function_complexity = [], functions = [], cfgs = [] } = data;
-
-    // ── ML Panel (gauge + probabilities + confidence) ─────────────────
-    renderMLPanel(risk);
-
-    // ── Model Switcher (Compare All mode) ─────────────────────────────
-    const switcher = $('model-switcher');
-    const compCard = $('comparison-card');
-    const hasComparisons = risk.comparisons && Object.keys(risk.comparisons).length > 1;
-
-    if (hasComparisons) {
-      switcher.classList.remove('hidden');
-      compCard && (compCard.style.display = 'none'); // hide old mini-card
-      renderModelSwitcher(risk.comparisons, risk);
-    } else {
-      switcher.classList.add('hidden');
-      compCard && (compCard.style.display = 'none');
-    }
-
-    // ── Metrics ───────────────────────────────────────────────────────
-    $('m-loc').textContent = metrics.lines_of_code;
-    $('m-cc').textContent = metrics.cyclomatic_complexity;
-    $('m-time').textContent = metrics.time_complexity;
-    $('m-fn').textContent = metrics.num_functions;
-    $('m-leak').textContent = metrics.memory_leak_count;
-    $('m-unsafe').textContent = metrics.unsafe_function_count;
-
-    if (metrics.memory_leak_count > 0) $('metric-leak').classList.add('warn');
-    if (metrics.unsafe_function_count > 0) $('metric-unsafe').classList.add('warn');
-
-    // ── Issues ────────────────────────────────────────────────────────
-    try { renderIssues(issues || []); $('tab-count-issues').textContent = (issues || []).length; }
-    catch (e) { console.error('Issues render error:', e); }
-
-    // ── Suggestions ───────────────────────────────────────────────────
-    try {
-      const sugs = (suggestions && suggestions.suggestions) || [];
-      renderSuggestions(sugs);
-      $('tab-count-suggestions').textContent = sugs.length;
-    } catch (e) { console.error('Suggestions render error:', e); }
-
-    // ── Complexity Chart ──────────────────────────────────────────────
-    try { renderComplexityChart(function_complexity || []); }
-    catch (e) { console.error('Complexity render error:', e); }
-
-    // ── Functions & CFG ───────────────────────────────────────────────
-    try { renderFunctions(functions || [], function_complexity || [], cfgs || []); }
-    catch (e) { console.error('Functions render error:', e); }
-
-  } catch (e) {
-    console.error('Error rendering results:', e);
-    showError(`Rendering error: ${e.message}`);
-  }
-}
-
-// ── ML Panel: Gauge + Proba + Confidence ──────────────────────────────────
-function renderMLPanel(riskObj) {
-  renderGauge(riskObj.score || riskObj.risk_score || 0, riskObj.label || riskObj.risk_label || 'Unknown');
-
-  const proba = riskObj.probabilities || {};
-  $('proba-clean').textContent = (proba['Clean'] ?? 0) + '%';
-  $('proba-moderate').textContent = (proba['Moderate Risk'] ?? 0) + '%';
-  $('proba-high').textContent = (proba['High Risk'] ?? 0) + '%';
-
-  if ($('confidence-score')) {
-    const conf = riskObj.confidence || 0;
-    $('confidence-score').textContent = conf + '%';
-    const exList = riskObj.explanations || [];
-    $('confidence-explain').textContent = exList.length > 0
-      ? exList[exList.length - 1]
-      : 'Prediction bounds aligned successfully.';
-
-    if (conf === 100 && (riskObj.label || riskObj.risk_label) === 'High Risk') {
-      $('confidence-explain').style.color = 'var(--clr-high)';
-    } else if (conf < 70) {
-      $('confidence-explain').style.color = 'var(--clr-moderate)';
-    } else {
-      $('confidence-explain').style.color = 'var(--clr-text-3)';
-    }
-  }
-}
-
-// ── Model Switcher: wire up 4 buttons in Compare All mode ─────────────────
-const MODEL_META = {
-  v3: { icon: '🔬', name: 'V3 Path-Sensitive' },
-  dl: { icon: '🧠', name: 'DL V1' },
-  ensemble: { icon: '🌳', name: 'Ensemble' },
-  v4_dl: { icon: '🔗', name: 'V4 Dedup DL' },
+// ─────────────────────────────────────────────────────────── rendering
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const humanType = t => String(t || '').toLowerCase().replace(/_/g, ' ');
+// how a finding reads inside a sentence
+const PHRASE = {
+  UNSAFE_FUNCTION: 'an unsafe library call', USE_AFTER_FREE: 'a use after free', DOUBLE_FREE: 'a double free',
+  NULL_DEREF: 'a null dereference', BUFFER_OVERFLOW: 'a buffer overflow', FORMAT_STRING: 'a format-string bug',
+  MEMORY_LEAK: 'a memory leak', RESOURCE_LEAK: 'a resource leak', UNINITIALIZED_VARIABLE: 'an uninitialized variable',
+  SQL_INJECTION: 'SQL injection', COMMAND_INJECTION: 'command injection', INSECURE_DESERIALIZATION: 'unsafe deserialization',
+  PATH_TRAVERSAL: 'path traversal', XSS: 'cross-site scripting', HARDCODED_CREDENTIAL: 'a hard-coded credential',
+  WEAK_CRYPTO: 'weak cryptography', EMPTY_CATCH: 'a swallowed exception', UNCHECKED_ALLOC: 'an unchecked allocation',
+  INVALID_FREE: 'an invalid free', INFINITE_LOOP: 'a possible infinite loop', HIGH_COMPLEXITY: 'a very complex function',
+  DEEP_NESTING: 'deep nesting', RECURSION: 'recursion', DEAD_CODE: 'unreachable code',
 };
+const phrase = t => PHRASE[t] || humanType(t);
+// message text from the engine: drop the "at line N" that the note already shows, and set `code` in mono
+const prose = s => esc(String(s || '').replace(/\s+at line \d+(?=[:.,]| )/g, '')).replace(/`([^`]+)`/g, '<code>$1</code>');
 
-function renderModelSwitcher(comparisons, primaryRisk) {
-  const switcherBtns = document.querySelectorAll('.model-switch-btn');
-
-  // Mark unavailable buttons (model wasn't in comparisons)
-  switcherBtns.forEach(btn => {
-    const m = btn.dataset.model;
-    if (!comparisons[m]) {
-      btn.classList.add('unavailable');
-      btn.title = 'Model unavailable (not trained or failed to load)';
-    } else {
-      btn.classList.remove('unavailable');
-      btn.title = '';
-    }
-  });
-
-  // Determine first available model to pre-select
-  const available = Object.keys(comparisons);
-  const firstModel = ['v3', 'dl', 'ensemble', 'v4_dl'].find(m => available.includes(m)) || available[0];
-
-  // Pre-activate first button and display its panel
-  switcherBtns.forEach(btn => {
-    const m = btn.dataset.model;
-    btn.classList.toggle('active', m === firstModel);
-  });
-  if (comparisons[firstModel]) renderMLPanel(comparisons[firstModel]);
-
-  // Click handlers
-  switcherBtns.forEach(btn => {
-    // Clone to remove old listeners
-    const fresh = btn.cloneNode(true);
-    btn.parentNode.replaceChild(fresh, btn);
-
-    fresh.addEventListener('click', () => {
-      const m = fresh.dataset.model;
-      if (fresh.classList.contains('unavailable')) return;
-
-      document.querySelectorAll('.model-switch-btn').forEach(b => b.classList.remove('active'));
-      fresh.classList.add('active');
-
-      // Swap the ML panel to show this model's data
-      renderMLPanel(comparisons[m]);
-    });
-  });
+function sortedIssues(issues) {
+  return [...issues].sort((a, b) => SEV.indexOf(a.severity) - SEV.indexOf(b.severity) || (a.line || 1e9) - (b.line || 1e9));
 }
 
+function render(data) {
+  doneReading();
+  const risk = data.risk || {};
+  const comps = risk.comparisons && Object.keys(risk.comparisons).length > 1 ? risk.comparisons : null;
+  state.view = comps ? (comps.v3 ? 'v3' : Object.keys(comps)[0]) : state.model;
 
-// ── Gauge (SVG arc) ────────────────────────────────────────────────────
-function renderGauge(score, label) {
-  const canvas = $('gauge-canvas');
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const notes = sortedIssues(data.issues || []);
+  state.notes = notes;
+  state.filter = 'ALL';
 
-  const cx = 90, cy = 88, r = 70;
-  const startAngle = Math.PI;
-  const endAngle = 2 * Math.PI;
-  const totalAngle = endAngle - startAngle;
-  const scoreAngle = startAngle + (score / 100) * totalAngle;
+  renderVerdict(comps ? comps[state.view] : risk, notes, data);
+  renderCompare(comps);
+  renderNotes(notes);
+  renderLedger(data);
+  renderBars(data.function_complexity || []);
+  renderCalls(data);
+  renderChanges((data.suggestions && data.suggestions.suggestions) || []);
+  renderAnalysisNotes(data);
+  enterListing(state.code, notes);
 
-  // Background arc
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, startAngle, endAngle);
-  ctx.strokeStyle = 'rgba(255,255,255,0.07)';
-  ctx.lineWidth = 12;
-  ctx.lineCap = 'round';
-  ctx.stroke();
-
-  // Score arc
-  const gradient = ctx.createLinearGradient(0, 0, canvas.width, 0);
-  gradient.addColorStop(0, '#22c55e');
-  gradient.addColorStop(0.4, '#f59e0b');
-  gradient.addColorStop(1, '#ef4444');
-
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, startAngle, scoreAngle);
-  ctx.strokeStyle = gradient;
-  ctx.lineWidth = 12;
-  ctx.lineCap = 'round';
-  ctx.stroke();
-
-  // Tick marks
-  for (let i = 0; i <= 10; i++) {
-    const angle = startAngle + (i / 10) * totalAngle;
-    const ix = cx + (r - 18) * Math.cos(angle);
-    const iy = cy + (r - 18) * Math.sin(angle);
-    const ox = cx + (r - 8) * Math.cos(angle);
-    const oy = cy + (r - 8) * Math.sin(angle);
-    ctx.beginPath(); ctx.moveTo(ix, iy); ctx.lineTo(ox, oy);
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1.5; ctx.stroke();
-  }
-
-  // Score text
-  $('gauge-score').textContent = score;
-  const riskColors = { 'Clean': '#22c55e', 'Moderate Risk': '#f59e0b', 'High Risk': '#ef4444' };
-  const rl = $('gauge-risk-label');
-  rl.textContent = label;
-  rl.style.color = riskColors[label] || '#94a3b8';
+  show('results-content');
+  $('verdict-label').focus({ preventScroll: true });
+  $('analyze-btn-text').textContent = 'Review again';
 }
 
-// ── Issues ─────────────────────────────────────────────────────────────
-function renderIssues(issues) {
-  const list = $('issues-list');
+function renderVerdict(r, notes, data) {
+  const label = r.label || r.risk_label || 'Clean';
+  const level = LEVEL[label] ?? 0;
+  const score = Math.round(r.score ?? r.risk_score ?? 0);
+  const v = $('verdict');
+  v.dataset.level = level;
+  v.querySelector('.kicker').textContent = 'Verdict';
+  $('verdict-label').textContent = LEVEL_TEXT[level];
+  $('verdict-score').textContent = score;
+  requestAnimationFrame(() => { $('scale-mark').style.left = Math.max(0, Math.min(100, score)) + '%'; });
+  $('verdict-model').textContent = MODEL_SHORT[state.view] || state.view;
+  $('confidence-score').textContent = (r.confidence != null ? Math.round(r.confidence) : '—') + (r.confidence != null ? '%' : '');
 
-  // Severity icon map
-  const sevIcon = { CRITICAL: '🔴', HIGH: '🟠', MEDIUM: '🟡', LOW: '🟢' };
+  // one honest sentence about what the verdict rests on
+  const heavy = notes.filter(n => n.severity === 'CRITICAL' || n.severity === 'HIGH').slice(0, 3);
+  const mid = notes.filter(n => n.severity === 'MEDIUM').slice(0, 3);
+  const pick = heavy.length ? heavy : mid;
+  let why;
+  const say = n => `${phrase(n.type)}${n.line ? ` on line ${n.line}` : ''}`;
+  if (level === 2 && heavy.length) why = `It comes down to ${list(heavy.map(say))}.`;
+  else if (level === 1 && pick.length) why = `Worth a look: ${list(pick.map(say))}.`;
+  else if (level === 1) why = 'Nothing is clearly broken, but the shape of the code makes the models cautious.';
+  else why = notes.length ? 'Only minor observations, none of which change the verdict.' : 'Nothing in here worried the analyzers.';
+  // keep only the model remarks that tell the reader something (drop boilerplate and restatements of the findings)
+  const extras = (r.explanations || []).filter(x => !(data.notes || []).includes(x) &&
+    !/nominal variance|Raised to HIGH RISK|^Very high cyclomatic/i.test(x));
+  const modelWord = extras.length ? ` <em>${esc(extras[extras.length - 1])}</em>` : '';
+  $('verdict-why').innerHTML = esc(why) + modelWord;
+}
+const list = a => a.length < 2 ? (a[0] || '') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1];
 
-  function renderFiltered(filter) {
-    const filtered = filter === 'ALL' ? issues : issues.filter(i => i.severity === filter);
-    list.innerHTML = '';
-    if (filtered.length === 0) {
-      list.innerHTML = `<div class="no-issues-msg"><span>✅</span> No ${filter === 'ALL' ? '' : filter.toLowerCase() + ' '}issues found.</div>`;
-      return;
-    }
-    filtered.forEach(issue => {
-      const div = document.createElement('div');
-      div.className = 'issue-item';
-      div.innerHTML = `
-        <span class="issue-sev-badge sev-${issue.severity}">${sevIcon[issue.severity] || ''} ${issue.severity}</span>
-        <div class="issue-body">
-          <div class="issue-message">${escHtml(issue.message)}</div>
-          <div class="issue-meta">
-            ${issue.line ? `<span class="issue-line">Line ${issue.line}</span>` : ''}
-            ${issue.type ? `<span style="margin-left:8px;color:var(--clr-text-3);font-size:0.72rem;">${issue.type}</span>` : ''}
-          </div>
-          ${issue.suggestion ? `<div class="issue-suggest">💡 ${escHtml(issue.suggestion)}</div>` : ''}
-        </div>`;
-      list.appendChild(div);
-    });
-  }
-
-  renderFiltered(currentIssueFilter);
-
-  // Filter buttons
-  document.querySelectorAll('.filter-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      currentIssueFilter = btn.dataset.sev;
-      renderFiltered(currentIssueFilter);
-    });
+function renderCompare(comps) {
+  const box = $('compare');
+  if (!comps) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  box.classList.remove('hidden');
+  const order = ['v3', 'v4_dl', 'ensemble', 'dl'];
+  const labels = new Set();
+  let html = '';
+  order.forEach(m => {
+    const c = comps[m];
+    if (!c) { html += `<button type="button" class="m-missing" disabled><span class="m-name">${MODEL_NAME[m]}</span><span class="m-verdict">not loaded</span><span class="m-score">–</span></button>`; return; }
+    const lv = LEVEL[c.risk_label] ?? 0; labels.add(lv);
+    html += `<button type="button" data-model="${m}" data-level="${lv}" class="${m === state.view ? 'is-on' : ''}"><span class="m-name">${MODEL_NAME[m]}</span><span class="m-verdict">${LEVEL_TEXT[lv]}</span><span class="m-score">${Math.round(c.risk_score)}</span></button>`;
   });
+  html += `<p class="agree">${labels.size === 1 ? 'All of them agree.' : 'They disagree. The notes below are the same whichever you pick; only the verdict changes.'}</p>`;
+  box.innerHTML = html;
+  box.querySelectorAll('button[data-model]').forEach(b => b.addEventListener('click', () => {
+    state.view = b.dataset.model;
+    box.querySelectorAll('button').forEach(x => x.classList.toggle('is-on', x === b));
+    renderVerdict(comps[state.view], state.notes, state.data);
+  }));
 }
 
-// ── Suggestions ────────────────────────────────────────────────────────
-function renderSuggestions(sugs) {
-  const list = $('suggestions-list');
-  list.innerHTML = '';
-  if (sugs.length === 0) {
-    list.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--clr-clean);font-size:.88rem;">✅ No improvement suggestions — code looks clean!</div>';
-    return;
-  }
-  const catIcon = { 'Memory Management': '💧', 'Security': '🛡', 'Complexity': '🔄', 'Code Structure': '🏗', 'Performance': '⚡', 'Maintainability': '📐', 'General': '💡' };
-  sugs.forEach(sug => {
-    const div = document.createElement('div');
-    div.className = 'suggestion-item';
-    div.innerHTML = `
-      <div class="sug-header">
-        <span class="issue-sev-badge sev-${sug.severity}">${sug.severity}</span>
-        <span class="sug-cat">${catIcon[sug.category] || '💡'} ${sug.category}</span>
-      </div>
-      <div class="sug-message">${escHtml(sug.message)}</div>
-      <div class="sug-detail">${escHtml(sug.suggestion)}</div>
-      ${sug.example ? `<pre class="sug-example">${escHtml(sug.example)}</pre>` : ''}`;
-    list.appendChild(div);
+function renderNotes(notes) {
+  const counts = { ALL: notes.length };
+  SEV.forEach(s => counts[s] = notes.filter(n => n.severity === s).length);
+  $('tab-count-issues').textContent = notes.length;
+
+  const f = $('filters');
+  f.innerHTML = ['ALL', ...SEV].map(s =>
+    `<button type="button" data-sev="${s}" class="${s === state.filter ? 'is-on' : ''}" ${counts[s] === 0 && s !== 'ALL' ? 'disabled' : ''}>${s === 'ALL' ? 'All' : SEV_LABEL[s]} ${counts[s]}</button>`).join('');
+  f.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    state.filter = b.dataset.sev;
+    f.querySelectorAll('button').forEach(x => x.classList.toggle('is-on', x === b));
+    applyFilter();
+  }));
+
+  const ol = $('issues-list');
+  ol.innerHTML = notes.map((n, i) => {
+    const sev = n.severity.toLowerCase();
+    const where = n.line ? `<button type="button" class="note__where" data-goto="${n.line}">line ${n.line}</button>` : `<span class="note__where" style="text-decoration:none;cursor:default">whole file</span>`;
+    return `<li class="note sev-${sev}" data-i="${i}" data-sev="${n.severity}" data-line="${n.line || 0}" style="--i:${Math.min(i, 14)}">
+      <span class="note__no">${i + 1}</span>
+      <div class="note__top"><span class="tag sev-${sev}">${SEV_LABEL[n.severity] || esc(n.severity)}</span>${where}<span class="note__type">${esc(humanType(n.type))}</span></div>
+      <p class="note__msg">${prose(n.message)}</p>
+      ${n.suggestion ? `<p class="note__fix"><b>Change</b>${prose(n.suggestion)}</p>` : ''}
+      ${n.fix ? `<div class="note__edit"><b>Suggested edit · line ${n.fix.line}</b>
+        <pre class="diff"><del>- ${esc(n.fix.before.trim())}</del>
+<ins>+ ${esc(n.fix.after.trim())}</ins></pre>
+        ${n.fix.note ? `<p class="note__editnote">${esc(n.fix.note)}</p>` : ''}
+        <button type="button" class="linkbtn" data-apply="${i}">Apply this edit and review again</button></div>` : ''}
+    </li>`;
+  }).join('');
+  ol.querySelectorAll('[data-goto]').forEach(b => b.addEventListener('click', () => gotoLine(+b.dataset.goto)));
+  ol.querySelectorAll('[data-apply]').forEach(b => b.addEventListener('click', () => applyFix(notes[+b.dataset.apply].fix)));
+  ol.querySelectorAll('.note').forEach(li => {
+    li.addEventListener('mouseenter', () => hotLine(+li.dataset.line, true));
+    li.addEventListener('mouseleave', () => hotLine(+li.dataset.line, false));
   });
+  applyFilter();
+}
+// replace one line of the reviewed code with the suggested edit, then review the result
+function applyFix(fix) {
+  const lines = state.code.split('\n');
+  if (!fix || lines[fix.line - 1] !== fix.before) { showError('The code has changed since this review, so the edit can’t be applied safely. Review again first.'); return; }
+  lines[fix.line - 1] = fix.after;
+  leaveListing();
+  editor.value = lines.join('\n');
+  refreshEditor();
+  runAnalysis();
 }
 
-// ── Complexity Bar Chart ───────────────────────────────────────────────
-function renderComplexityChart(funcComplexity) {
-  const ctx = $('complexity-chart').getContext('2d');
-
-  if (complexityChart) { complexityChart.destroy(); complexityChart = null; }
-
-  if (!funcComplexity || !Array.isArray(funcComplexity) || !funcComplexity.length) return;
-
-  const labels = funcComplexity.map(f => f.function || f.name || '__global__').filter(Boolean);
-  const values = funcComplexity.map(f => Math.max(1, f.cyclomatic_complexity || 1));
-  const colors = values.map(v =>
-    v <= 5 ? 'rgba(99,102,241,0.8)' :
-      v <= 10 ? 'rgba(245,158,11,0.8)' :
-        'rgba(239,68,68,0.8)'
-  );
-
-  if (!labels.length || !values.length) {
-    ctx.canvas.parentElement.innerHTML = '<div style="color:var(--clr-text-3);text-align:center;padding:2rem;">No complexity data available.</div>';
-    return;
-  }
-
-  complexityChart = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Cyclomatic Complexity',
-        data: values,
-        backgroundColor: colors,
-        borderColor: colors.filter(c => c).map(c => c ? c.replace('0.8', '1') : 'rgba(255,255,255,1)'),
-        borderWidth: 1.5,
-        borderRadius: 6,
-      }],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          backgroundColor: '#0d1117',
-          borderColor: 'rgba(255,255,255,0.1)',
-          borderWidth: 1,
-          callbacks: {
-            label: ctx => ` CC: ${ctx.raw}  (${ctx.raw <= 5 ? 'Simple' : ctx.raw <= 10 ? 'Moderate' : 'Complex'})`,
-          },
-        },
-      },
-      scales: {
-        x: {
-          ticks: { color: '#64748b', font: { family: 'JetBrains Mono', size: 11 }, maxRotation: 30 },
-          grid: { color: 'rgba(255,255,255,0.04)' },
-        },
-        y: {
-          min: 0,
-          ticks: { color: '#64748b', stepSize: 1 },
-          grid: { color: 'rgba(255,255,255,0.06)' },
-        },
-      },
-    },
+function applyFilter() {
+  let shown = 0;
+  document.querySelectorAll('#issues-list .note').forEach(li => {
+    const ok = state.filter === 'ALL' || li.dataset.sev === state.filter;
+    li.classList.toggle('hidden', !ok);
+    if (ok) shown++;
   });
+  $('no-issues-msg').classList.toggle('hidden', shown > 0);
+  $('no-issues-msg').textContent = state.notes.length === 0 ? 'Nothing to flag. That is not a guarantee, only what this analyzer can see.' : 'Nothing to flag in this category.';
 }
 
-// ── Functions Panel ────────────────────────────────────────────────────
-function renderFunctions(functions, funcComplexity, cfgs) {
-  const list = $('functions-list');
-  list.innerHTML = '';
-
-  const ccMap = {};
-  if (Array.isArray(funcComplexity)) {
-    funcComplexity.forEach(f => {
-      if (f && f.function) ccMap[f.function] = f.cyclomatic_complexity || 1;
-      if (f && f.name) ccMap[f.name] = f.cyclomatic_complexity || 1;
-    });
-  }
-
-  if (!functions || functions.length === 0) {
-    list.innerHTML = '<div style="color:var(--clr-text-3);font-size:.85rem;">No functions detected.</div>';
-  } else {
-    functions.forEach(fn => {
-      if (!fn || !fn.name) return; // Skip invalid entries
-      const cc = ccMap[fn.name] || 1;
-      const ccClass = cc <= 5 ? 'fn-cc-low' : cc <= 10 ? 'fn-cc-mod' : 'fn-cc-high';
-      const chip = document.createElement('div');
-      chip.className = 'fn-chip';
-      chip.innerHTML = `
-        <span class="fn-name">${escHtml(fn.name)}()</span>
-        <span class="fn-line">L${fn.line || 'N/A'}</span>
-        <span class="fn-cc-badge ${ccClass}">CC:${cc}</span>`;
-      list.appendChild(chip);
-    });
-  }
-
-  // Mermaid dependency graph
-  renderMermaidGraph(functions, cfgs);
+function renderLedger(data) {
+  const m = data.metrics || {};
+  const rows = [
+    ['Lines of code', m.lines_of_code],
+    ['Functions', m.num_functions],
+    ['Cyclomatic complexity', m.cyclomatic_complexity, 'highest of any function'],
+    ['Estimated running time', m.time_complexity],
+    ['Memory leaks', m.memory_leak_count, null, m.memory_leak_count > 0],
+    ['Unsafe or injectable calls', m.unsafe_function_count, null, m.unsafe_function_count > 0],
+    ['Recursive functions', m.recursion_count],
+    ['Depth of analysis', data.analysis_mode === 'heuristic' ? 'heuristic' : 'full parse'],
+    ...((data.suppressed || []).length ? [['Suppressed by comments', data.suppressed.length]] : []),
+  ];
+  $('ledger').innerHTML = rows.map(([k, v, , warn]) =>
+    `<div class="${warn ? 'is-warn' : ''}"><dt>${esc(k)}</dt><span class="lead"></span><dd>${esc(v ?? '—')}</dd></div>`).join('');
 }
 
-function renderMermaidGraph(functions, cfgs) {
-  const container = $('mermaid-graph');
+function renderBars(fc) {
+  const sec = $('sec-complexity');
+  if (!fc.length) { sec.classList.add('hidden'); return; }
+  sec.classList.remove('hidden');
+  const max = Math.max(15, ...fc.map(f => f.cyclomatic_complexity));
+  const rows = [...fc].sort((a, b) => b.cyclomatic_complexity - a.cyclomatic_complexity).slice(0, 14);
+  $('complexity-bars').innerHTML = rows.map(f => {
+    const cc = f.cyclomatic_complexity;
+    const cls = cc > 15 ? 'is-hi' : cc > 10 ? 'is-mid' : '';
+    return `<li><span class="b-name" title="${esc(f.function)}">${esc(f.function)}</span><span class="b-track"><span class="b-fill ${cls}" style="width:${(cc / max * 100).toFixed(1)}%"></span></span><span class="b-val">${cc}</span></li>`;
+  }).join('') + (fc.length > rows.length ? `<li><span class="b-name" style="font-style:italic;font-family:var(--serif)">and ${fc.length - rows.length} more</span></li>` : '');
+}
 
-  if (!functions || functions.length === 0) {
-    container.innerHTML = '<div style="color:var(--clr-text-3);font-size:.82rem;">No functions to graph.</div>';
-    return;
-  }
+function renderCalls(data) {
+  const sec = $('sec-structure');
+  const fns = data.functions || [];
+  if (!fns.length) { sec.classList.add('hidden'); return; }
+  sec.classList.remove('hidden');
+  const graph = {}; (data.cfgs || []).forEach(c => graph[c.func_name] = c.calls || []);
+  const hasGraph = (data.cfgs || []).length > 0;
+  $('functions-list').innerHTML = fns.slice(0, 40).map(f => {
+    const calls = graph[f.name] || [];
+    const selfCall = calls.includes(f.name);
+    const others = calls.filter(c => c !== f.name);
+    const to = !hasGraph ? '' :
+      others.length ? `<span class="c-to">calls ${others.map(esc).join(', ')}${selfCall ? ' <span class="c-rec">· and itself ↻</span>' : ''}</span>`
+        : selfCall ? '<span class="c-to c-rec">calls itself ↻</span>' : '<span class="c-to is-none">calls nothing else here</span>';
+    return `<li><span class="c-fn">${esc(f.name)}<small>L${f.line || '?'}</small></span>${to}</li>`;
+  }).join('') + (fns.length > 40 ? `<li><span class="c-to is-none">and ${fns.length - 40} more</span></li>` : '');
+}
 
-  const safeName = n => {
-    if (!n || typeof n !== 'string') return '_unknown_';
-    return n.replace(/[^a-zA-Z0-9_]/g, '_');
-  };
-  let graph = 'graph LR\n';
+function renderChanges(sugs) {
+  $('tab-count-suggestions').textContent = sugs.length;
+  const sec = $('sec-changes');
+  if (!sugs.length) { sec.classList.add('hidden'); return; }
+  sec.classList.remove('hidden');
+  $('suggestions-list').innerHTML = sugs.map(s => `
+    <div class="change">
+      <h4>${prose(s.message)}</h4>
+      <p>${prose(s.suggestion)}${s.line ? ` <span class="note__type">· line ${s.line}</span>` : ''}</p>
+      ${s.example ? `<pre>${esc(s.example)}</pre>` : ''}
+    </div>`).join('');
+}
 
-  // If we have actual CFG generation data from the V3 backend:
-  if (cfgs && cfgs.length > 0) {
-    // Collect all unique function blocks first
-    cfgs.forEach(cfg => {
-      const gName = safeName(cfg.func_name);
-      graph += `  ${gName}("${cfg.func_name}()")\n`;
-      graph += `  style ${gName} fill:#1e1b4b,stroke:#06b6d4,stroke-width:2px,color:#e2e8f0\n`;
+function renderAnalysisNotes(data) {
+  const box = $('analysis-notes');
+  const notes = data.notes || [];
+  box.hidden = notes.length === 0;
+  box.innerHTML = notes.map(n => `<p>${esc(n)}</p>`).join('');
+}
 
-      // Look explicitly for Call Graph relations mapped by the Recursion Analyzer
-      if (cfg.nodes) {
-        for (let n_id in cfg.nodes) {
-          const node = cfg.nodes[n_id];
+// ─────────────────────────────────────────────────────────── the annotated listing
+const KEYWORDS = new Set(('auto break case char const continue default do double else enum extern float for goto if inline int long register ' +
+  'restrict return short signed sizeof static struct switch typedef union unsigned void volatile while class public private protected new delete ' +
+  'template typename namespace using try catch throw this nullptr bool true false null final abstract implements extends interface import package ' +
+  'instanceof synchronized throws boolean byte super finally var').split(' '));
 
-          // Draw dependency arrows for explicit function invocations
-          if (node.type === "FuncCall" && node.func_name) {
-            const targetName = safeName(node.func_name);
-            graph += `  ${gName} -->|Calls| ${targetName}\n`;
-          }
-        }
+function highlight(code) {
+  let inBlock = false;
+  return code.split('\n').map(raw => {
+    let out = '', i = 0;
+    const put = (cls, text) => { out += cls ? `<span class="${cls}">${esc(text)}</span>` : esc(text); };
+    if (!inBlock && /^\s*#/.test(raw)) { put('tk-p', raw); return out; }
+    while (i < raw.length) {
+      if (inBlock) {
+        const end = raw.indexOf('*/', i);
+        if (end === -1) { put('tk-c', raw.slice(i)); i = raw.length; } else { put('tk-c', raw.slice(i, end + 2)); i = end + 2; inBlock = false; }
+        continue;
       }
-    });
-  } else {
-    // Fallback: Disconnected nodes for Java / Basic tracking
-    functions.forEach((fn, i) => {
-      graph += `  ${safeName(fn.name)}["${fn.name}()  L${fn.line}"]\n`;
-      graph += `  style ${safeName(fn.name)} fill:#1e1b4b,stroke:#6366f1,color:#e2e8f0\n`;
-    });
-  }
-
-  const mermaidDiv = document.createElement('div');
-  mermaidDiv.className = 'mermaid';
-  mermaidDiv.textContent = graph;
-  container.innerHTML = '';
-  container.appendChild(mermaidDiv);
-
-  try {
-    mermaid.init({ theme: 'dark', themeVariables: { primaryColor: '#6366f1', edgeLabelBackground: '#0d1117' } }, mermaidDiv);
-  } catch (e) {
-    container.innerHTML = '<div style="color:var(--clr-text-3);font-size:.78rem;">Graph rendering skipped.</div>';
-  }
+      const rest = raw.slice(i);
+      let m;
+      if (rest.startsWith('//')) { put('tk-c', rest); break; }
+      if (rest.startsWith('/*')) {
+        const end = raw.indexOf('*/', i + 2);
+        if (end === -1) { put('tk-c', rest); inBlock = true; i = raw.length; }
+        else { put('tk-c', raw.slice(i, end + 2)); i = end + 2; }
+        continue;
+      }
+      if ((m = /^"(?:\\.|[^"\\])*"?/.exec(rest)) || (m = /^'(?:\\.|[^'\\])*'?/.exec(rest))) { put('tk-s', m[0]); i += m[0].length; continue; }
+      if ((m = /^\d[\w.]*/.exec(rest))) { put('tk-n', m[0]); i += m[0].length; continue; }
+      if ((m = /^[A-Za-z_]\w*/.exec(rest))) { put(KEYWORDS.has(m[0]) ? 'tk-k' : '', m[0]); i += m[0].length; continue; }
+      put('', raw[i]); i++;
+    }
+    return out || '&nbsp;';
+  });
 }
 
-// ── Tab Navigation ─────────────────────────────────────────────────────
-document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
-    btn.classList.add('active');
-    const panel = $(`tab-${btn.dataset.tab}`);
-    if (panel) panel.classList.remove('hidden');
+function enterListing(code, notes) {
+  const byLine = {};
+  notes.forEach((n, i) => { if (n.line > 0) (byLine[n.line] = byLine[n.line] || []).push({ n, no: i + 1 }); });
+  const lines = highlight(code);
+  listing.innerHTML = lines.map((h, idx) => {
+    const ln = idx + 1, hits = byLine[ln];
+    const worst = hits ? hits.map(x => x.n.severity).sort((a, b) => SEV.indexOf(a) - SEV.indexOf(b))[0].toLowerCase() : '';
+    const pins = hits ? hits.map(x => `<button type="button" class="pin sev-${x.n.severity.toLowerCase()}" data-note="${x.no}" title="Note ${x.no}: ${esc(SEV_LABEL[x.n.severity])}" aria-label="Note ${x.no}, line ${ln}"><span>${x.no}</span></button>`).join('') : '';
+    return `<div class="ln${hits ? ' is-flag sev-' + worst : ''}" id="ln-${ln}" data-ln="${ln}"><span class="ln__no">${ln}</span><span class="ln__pin">${pins}</span><span class="ln__code">${h}</span></div>`;
+  }).join('');
+  listing.querySelectorAll('.pin').forEach(p => p.addEventListener('click', () => gotoNote(+p.dataset.note)));
 
-    // Re-render chart on tab switch (needed for responsive resize)
-    if (btn.dataset.tab === 'complexity' && currentResults) {
-      renderComplexityChart(currentResults.function_complexity || []);
-    }
+  editor.classList.add('hidden');
+  gutter.classList.add('hidden');
+  document.querySelector('.sheet__body').classList.add('is-listing');
+  listing.classList.remove('hidden');
+  $('btn-edit').classList.remove('hidden');
+  listing.scrollTop = 0;
+  const first = notes.find(n => n.line > 0);
+  if (first) setTimeout(() => scrollListingTo(first.line, false), 250);
+}
+function leaveListing() {
+  listing.classList.add('hidden');
+  editor.classList.remove('hidden');
+  gutter.classList.remove('hidden');
+  document.querySelector('.sheet__body').classList.remove('is-listing');
+  $('btn-edit').classList.add('hidden');
+  $('analyze-btn-text').textContent = 'Review this code';
+}
+$('btn-edit').addEventListener('click', () => { leaveListing(); editor.focus(); });
+
+function scrollListingTo(line, pulse = true) {
+  const el = $('ln-' + line);
+  if (!el) return;
+  const top = el.offsetTop - listing.clientHeight / 2 + el.clientHeight / 2;
+  listing.scrollTo({ top: Math.max(0, top), behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  if (pulse) { el.classList.remove('is-pulse'); void el.offsetWidth; el.classList.add('is-pulse'); }
+}
+function gotoLine(line) { scrollListingTo(line); }
+function gotoNote(no) {
+  const li = document.querySelector(`#issues-list .note[data-i="${no - 1}"]`);
+  if (!li) return;
+  if (li.classList.contains('hidden')) { state.filter = 'ALL'; renderNotes(state.notes); }
+  const target = document.querySelector(`#issues-list .note[data-i="${no - 1}"]`);
+  target.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' });
+  target.classList.add('is-hot'); setTimeout(() => target.classList.remove('is-hot'), 1200);
+}
+function hotLine(line, on) { const el = line && $('ln-' + line); if (el) el.classList.toggle('is-hot', on); }
+
+// ─────────────────────────────────────────────────────────── save / print
+$('print-btn').addEventListener('click', () => window.print());
+$('download-report-btn').addEventListener('click', () => {
+  const r = state.data; if (!r) return;
+  const risk = r.risk || {}, m = r.metrics || {};
+  const comps = risk.comparisons && Object.keys(risk.comparisons).length > 1 ? risk.comparisons : null;
+  const view = comps ? comps[state.view] : risk;
+  const level = LEVEL[view.label || view.risk_label] ?? 0;
+  const rule = '='.repeat(64);
+  let t = `${rule}\nINTELLIREVIEW — REVIEW\n${rule}\n`;
+  t += `Language  : ${r.language || state.lang}\nDate      : ${new Date().toLocaleString()}\nAnalysis  : ${r.analysis_mode === 'heuristic' ? 'heuristic (not fully parsed)' : 'full parse'}\n\n`;
+  t += `VERDICT   : ${LEVEL_TEXT[level]}  (${Math.round(view.score ?? view.risk_score ?? 0)}/100)\n`;
+  if (comps) Object.entries(comps).forEach(([k, c]) => { t += `  ${(MODEL_SHORT[k] || k).padEnd(9)}: ${LEVEL_TEXT[LEVEL[c.risk_label] ?? 0]} (${Math.round(c.risk_score)})\n`; });
+  t += `\nMEASUREMENTS\n${'-'.repeat(12)}\n`;
+  [['Lines of code', m.lines_of_code], ['Functions', m.num_functions], ['Cyclomatic complexity', m.cyclomatic_complexity],
+   ['Estimated running time', m.time_complexity], ['Memory leaks', m.memory_leak_count], ['Unsafe calls', m.unsafe_function_count],
+   ['Recursive functions', m.recursion_count]].forEach(([k, v]) => { t += `${k.padEnd(26)} ${v}\n`; });
+  t += `\nNOTES (${state.notes.length})\n${'-'.repeat(8)}\n`;
+  if (!state.notes.length) t += 'Nothing to flag.\n';
+  state.notes.forEach((n, i) => {
+    t += `\n[${i + 1}] ${n.severity}${n.line ? `, line ${n.line}` : ''}  (${humanType(n.type)})\n    ${n.message}\n`;
+    if (n.suggestion) t += `    Change: ${n.suggestion}\n`;
   });
+  const sugs = (r.suggestions && r.suggestions.suggestions) || [];
+  if (sugs.length) {
+    t += `\nCHANGES WORTH MAKING\n${'-'.repeat(20)}\n`;
+    sugs.forEach((s, i) => { t += `\n${i + 1}. ${s.message}\n   ${s.suggestion}\n`; if (s.example) s.example.split('\n').forEach(l => t += `     ${l}\n`); });
+  }
+  (r.notes || []).forEach(n => t += `\nNote: ${n}\n`);
+  t += `\n${rule}\nThe analyzer reports what it can see. It is not a guarantee that code is safe.\n`;
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([t], { type: 'text/plain;charset=utf-8' })), download: `intellireview-${Date.now()}.txt` });
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
 });
 
-// ── Utilities ──────────────────────────────────────────────────────────
-function escHtml(str) {
-  if (!str) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+// ─────────────────────────────────────────────────────────── engine status
+async function pingEngine() {
+  const el = $('engine'), txt = $('engine-text');
+  try {
+    const r = await fetch(`${API_BASE}/health`, { cache: 'no-store' });
+    if (!r.ok) throw new Error();
+    el.className = 'engine is-up'; txt.textContent = 'Engine online';
+  } catch { el.className = 'engine is-down'; txt.textContent = 'Engine offline'; }
 }
+pingEngine();
+setInterval(pingEngine, 20000);
 
-// ── Init ───────────────────────────────────────────────────────────────
-(function init() {
-  mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' });
-  // Load C sample by default
-  codeEditor.value = SAMPLES.C;
-  updateLineNumbers();
-
-  // ── Warmup: ping backend so ML model is pre-loaded before first upload
-  // This prevents the "first request slow" cold-start problem.
-  fetch(`${API_BASE}/health`, { method: 'GET' })
-    .then(r => r.json())
-    .then(() => {
-      const indicator = document.querySelector('.server-status') || null;
-      if (indicator) indicator.textContent = '🟢 Connected';
-      console.log('[IntelliReview] Backend warmed up ✅');
-    })
-    .catch(() => {
-      console.warn('[IntelliReview] Backend not reachable — start server with: python main.py');
-      // Show a subtle warning banner
-      const banner = document.createElement('div');
-      banner.style.cssText = 'position:fixed;bottom:1rem;right:1rem;background:#ef4444;color:#fff;' +
-        'padding:.5rem 1rem;border-radius:.5rem;font-size:.8rem;z-index:9999;';
-      banner.textContent = '⚠️ Backend offline — run: python main.py';
-      document.body.appendChild(banner);
-      setTimeout(() => banner.remove(), 8000);
-    });
-})();
+// ─────────────────────────────────────────────────────────── start
+refreshEditor();

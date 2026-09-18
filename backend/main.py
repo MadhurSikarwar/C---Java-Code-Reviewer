@@ -10,6 +10,7 @@ import os
 from config import API_TITLE, API_VERSION, API_DESCRIPTION, CORS_ORIGINS
 from routes.analyze import router as analyze_router
 from routes.health import router as health_router
+from routes.models import router as models_router
 
 
 # Lifespan event handler for model loading
@@ -20,6 +21,20 @@ async def lifespan(app: FastAPI):
     from ml.predict import load_model
     load_model()
     print("✅ IntelliReview API ready — model loaded.")
+
+    # Load the neural networks (TensorFlow is slow to import) in the background so the first real request is not the one
+    # that pays for it.
+    import threading
+
+    def _warm():
+        try:
+            from ml.predict import predict_risk
+            predict_risk([0.0] * 36, model_type="all", issues=[])
+            print("🔥 All four models warmed up.")
+        except Exception as e:  # noqa: BLE001 - warm-up must never stop the server
+            print(f"⚠️ Warm-up skipped: {e}")
+
+    threading.Thread(target=_warm, daemon=True, name="model-warmup").start()
     
     yield  # Application runs here
     
@@ -46,6 +61,7 @@ app.add_middleware(
 # Register routers
 app.include_router(health_router, tags=["Health"])
 app.include_router(analyze_router, prefix="/api", tags=["Analysis"])
+app.include_router(models_router, prefix="/api", tags=["Models"])
 
 # Mount frontend static files
 # Calculate absolute path to frontend directory (one level up from backend)

@@ -1,165 +1,137 @@
 """
 IntelliReview — /api/analyze route
-Accepts code + language, runs full analysis pipeline, returns JSON report.
-"""
-import traceback
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from typing import Optional
-import sys
-import os
+Accepts code + language, runs the full analysis pipeline, returns a JSON report.
 
-# Add parent for imports
+Hardening (the previous version returned "Clean" for empty input, prose and syntax errors, froze the
+whole server on a 2MB single-line input, and returned 500 for bad payloads):
+  * strict request validation -> 4xx with a helpful message, never 500
+  * size limits (characters, lines, line length)
+  * the CPU-bound analysis runs in a worker thread (the event loop keeps answering /health)
+    with a timeout
+"""
+import asyncio
+import os
+import sys
+import traceback
+from typing import Any, Dict, List
+
+from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, field_validator
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from parsers.c_parser import parse_c_code
-from parsers.java_parser import parse_java_code
-from analyzers.memory_leak import detect_memory_leaks
-from analyzers.unsafe_functions import detect_unsafe_functions
-from analyzers.complexity import analyze_complexity
-from analyzers.recursion import detect_recursion
-from analyzers.feature_extractor import extract_features
-from analyzers.v3_cfg_builder import build_cfg_for_file
-from analyzers.v3_pointer_state import analyze_pointers
-from analyzers.v3_data_flow import analyze_data_flow
-from analyzers.v3_code_smells import analyze_smells
-from analyzers.v3_complexity import analyze_time_complexity
-from analyzers.v3_feature_extractor import extract_v3_features
+from parsers.text_utils import sanitize, braces_balanced, looks_like_code
+from pipeline import static_analysis
 from suggestions.generator import generate_suggestions
-from ml.predict import predict_risk, load_model
+from analyzers.v4_issue_aggregator import aggregate_issues
+from ml.predict import predict_risk
 
 router = APIRouter()
+
+MAX_CODE_CHARS = 200_000
+MAX_LINES = 6_000
+MAX_LINE_LENGTH = 4_000
+ANALYSIS_TIMEOUT_S = 60
+
+VALID_MODELS = ("dl", "v3", "ensemble", "v4_dl", "all")
+MODEL_ALIASES = {"v3_path_sensitive": "v3"}
+LANGUAGE_ALIASES = {"C": "C", "C++": "C", "CPP": "C", "CXX": "C", "JAVA": "JAVA"}
 
 
 class CodeRequest(BaseModel):
     code: str
-    language: str  # "C" or "Java"
-    model_type: str = "dl"  # "dl", "v3", or "all"
+    language: str  # "C", "C++" or "Java"
+    model_type: str = "dl"  # "dl", "v3", "ensemble", "v4_dl" or "all"
+
+    @field_validator("language")
+    @classmethod
+    def _language(cls, v: str) -> str:
+        key = v.upper().strip()
+        if key not in LANGUAGE_ALIASES:
+            raise ValueError(f"Unsupported language '{v}'. Use 'C', 'C++' or 'Java'.")
+        return key
+
+    @field_validator("model_type")
+    @classmethod
+    def _model(cls, v: str) -> str:
+        key = MODEL_ALIASES.get(v.lower().strip(), v.lower().strip())
+        if key not in VALID_MODELS:
+            raise ValueError(f"Unknown model_type '{v}'. Use one of {', '.join(VALID_MODELS)}.")
+        return key
+
+
+def validate_source(code: str, language: str) -> None:
+    """Raise HTTPException(4xx) if `code` cannot meaningfully be analysed."""
+    if "\x00" in code:
+        raise HTTPException(422, "The input contains NUL bytes — it looks like a binary file, not source code.")
+    if not code.strip():
+        raise HTTPException(422, "No code to analyze: the input is empty.")
+    if len(code) > MAX_CODE_CHARS:
+        raise HTTPException(413, f"Input too large ({len(code):,} characters). Limit is {MAX_CODE_CHARS:,}.")
+    lines = code.splitlines()
+    if len(lines) > MAX_LINES:
+        raise HTTPException(413, f"Input has {len(lines):,} lines. Limit is {MAX_LINES:,}.")
+    longest = max((len(l) for l in lines), default=0)
+    if longest > MAX_LINE_LENGTH:
+        raise HTTPException(413, f"A line is {longest:,} characters long (limit {MAX_LINE_LENGTH:,}) — "
+                                 "is this minified or generated code?")
+
+    clean = sanitize(code, java_text_blocks=(language == "JAVA"))
+    if not clean.strip():
+        return  # only comments: valid, analysed as an empty program
+    if not looks_like_code(clean):
+        raise HTTPException(422, f"This does not look like {'Java' if language == 'JAVA' else 'C/C++'} source code.")
+    ok, reason = braces_balanced(clean)
+    if not ok:
+        raise HTTPException(422, f"Syntax error: {reason}. Fix the brackets and analyze again.")
+
 
 @router.post("/analyze")
 async def analyze_code(request: CodeRequest):
-    print(f"📊 Analysis request received:")
-    print(f"   Language: {request.language}")
-    print(f"   Model Type: {request.model_type}")
-    print(f"   Code length: {len(request.code)} characters")
-    
+    language = LANGUAGE_ALIASES[request.language]
+    validate_source(request.code, language)
     try:
-        print("🔄 Starting analysis...")
-        result = _run_analysis(request.code, request.language, request.model_type)
-        print("✅ Analysis completed successfully")
-        return result
-    except Exception as e:
-        error_msg = str(e)
-        if "traceback" in str(type(e)):
-            error_msg = f"{e.__class__.__name__}: {error_msg}"
-        import traceback as tb
-        print(f"❌ Analysis failed: {error_msg}")
-        tb.print_exc()
-        raise HTTPException(status_code=500, detail=error_msg)
+        return await asyncio.wait_for(
+            run_in_threadpool(_run_analysis, request.code, language, request.model_type),
+            timeout=ANALYSIS_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(504, f"Analysis took longer than {ANALYSIS_TIMEOUT_S}s and was abandoned. "
+                                 "Try a smaller file.")
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        raise HTTPException(500, f"Internal analysis error ({type(e).__name__}). This is a bug in IntelliReview, "
+                                 "not in your code.")
+
+
+def _call_graph(cfgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Compact per-function call graph for the UI (the raw CFGs are far too large to ship)."""
+    defined = {c.get("function") for c in cfgs}
+    out = []
+    for c in cfgs:
+        calls = sorted({x for x in c.get("function_calls", []) if x in defined})
+        out.append({"func_name": c.get("function"), "function": c.get("function"), "calls": calls,
+                    "num_blocks": len(c.get("nodes", {}))})
+    return out
+
 
 def _run_analysis(source: str, language: str, model_type: str = "dl") -> dict:
-    """Core analysis pipeline."""
-    language = language.upper().strip()
-    if language not in ("C", "JAVA"):
-        raise ValueError(f"Unsupported language '{language}'. Use 'C' or 'Java'.")
+    """Core analysis pipeline. `language` is 'C' or 'JAVA'."""
+    sa = static_analysis(source, language)
+    parse_result = sa["parse_result"]
+    memory_result = sa["memory_result"]
+    unsafe_result = sa["unsafe_result"]
+    complexity_result = sa["complexity_result"]
+    recursion_result = sa["recursion_result"]
+    feature_data = sa["feature_data"]
+    v3_issues = sa["v3_issues"]
+    all_issues = sa["all_issues"]
 
-    # Normalize model_type
-    model_type = model_type.lower().strip()
-    valid_types = ("dl", "v3", "ensemble", "v4_dl", "all")
-    if model_type not in valid_types:
-        # Accept legacy names and convert
-        if model_type == "v3_path_sensitive":
-            model_type = "v3"
-        else:
-            model_type = "v3"  # Default to V3 if unknown
+    ml_result = predict_risk(sa["feature_vector"], model_type=model_type, issues=all_issues)
 
-    # 1. Parse
-    if language == "C":
-        parse_result = parse_c_code(source)
-    else:
-        parse_result = parse_java_code(source)
-
-    # 2. Static Analysis Fundamentals (Always Run)
-    memory_result = detect_memory_leaks(parse_result)
-    unsafe_result = detect_unsafe_functions(parse_result)
-    complexity_result = analyze_complexity(parse_result, source)
-    recursion_result = detect_recursion(parse_result, source)
-
-    # 3. Extract Classic Features (21 features)
-    feature_data = extract_features(
-        parse_result, memory_result, unsafe_result,
-        complexity_result, recursion_result,
-        source=source,
-    )
-    
-    # NEW: Run V3 Path-Sensitive Analytics if Requested
-    v3_issues = []
-    cfgs = []
-    v3_leak_count = 0
-    
-    if model_type in ("v3", "dl", "ensemble", "v4_dl", "all"):
-        if language == "C":
-            try:
-                # Build AST properly handles the dict
-                cfgs = build_cfg_for_file(parse_result.get("ast"))
-                
-                # Re-evaluate recursion with the strict Inter-procedural V3 Call Graph
-                recursion_result = detect_recursion(parse_result, source, cfgs=cfgs)
-                p_res = analyze_pointers(cfgs)
-                v3_leak_count = p_res.get("metrics", {}).get("leak_count", 0)
-                
-                d_res = analyze_data_flow(source, cfgs)
-                s_res = analyze_smells(source, cfgs)
-                c_res = analyze_time_complexity(cfgs)
-                
-                v3_feats = extract_v3_features(p_res, d_res, s_res, c_res)
-                
-                # Combine 21 + 13 = 34 features
-                # Order must match V3_FEATURES list in training exactly
-                v3_order = [
-                    "use_after_free_count", "double_free_count", "path_leak_probability",
-                    "pointer_state_transitions", "infinite_loop_risks", "uninitialized_vars_used",
-                    "cfg_node_count", "branch_density", "cyclomatic_complexity", 
-                    "global_mutation_count", "loop_count", "max_loop_depth", "recursion_count"
-                ]
-                for f in v3_order:
-                    feature_data["feature_vector"].append(float(v3_feats.get(f, 0.0)))
-                    
-                v3_issues.extend(p_res.get("warnings", []))
-                v3_issues.extend(d_res.get("warnings", []))
-                v3_issues.extend(s_res.get("warnings", []))
-            except Exception as e:
-                # If V3 analysis fails, log but continue with basic analysis
-                print(f"⚠️ V3 analysis failed: {str(e)}")
-        else:
-            # For Java, use basic features but still try to extract from basic analysis
-            # Pad feature vector for compatibility with V3 model if needed
-            pass
-
-    # If path-sensitive V3 analysis fired and found memory leaks, suppress the naive regex memory leaks to prevent duplicates
-    has_v3_memory_issues = any(i.get("type") in ("MEMORY_LEAK", "DOUBLE_FREE") for i in v3_issues)
-    basic_memory_issues = memory_result.get("issues", [])
-    if has_v3_memory_issues:
-        basic_memory_issues = [i for i in basic_memory_issues if i.get("type") not in ("MEMORY_LEAK", "DOUBLE_FREE")]
-
-    # Collect all issues for the dashboard FIRST so ML has context for Hard Overrides!
-    raw_issues = (
-        basic_memory_issues
-        + unsafe_result.get("issues", [])
-        + complexity_result.get("issues", [])
-        + recursion_result.get("issues", [])
-        + v3_issues
-    )
-    
-    # 3.5 Deduplicate Issues (Stop Path Explosion)
-    from analyzers.v4_issue_aggregator import aggregate_issues
-    all_issues = aggregate_issues(raw_issues)
-
-    # 4. ML Prediction with Hard Override Support
-    ml_result = predict_risk(feature_data["feature_vector"], model_type=model_type, issues=all_issues)
-
-    # 5. Suggestions (Using aggregated issues to avoid duplicate noise)
     suggestion_result = generate_suggestions(
         features=feature_data["features"],
         memory_issues=aggregate_issues(memory_result.get("issues", []) + v3_issues),
@@ -168,27 +140,30 @@ def _run_analysis(source: str, language: str, model_type: str = "dl") -> dict:
         recursion_issues=aggregate_issues(recursion_result.get("issues", [])),
     )
 
-    # Build highlighted lines map
-    highlighted_lines = {}
+    weight = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
+    highlighted_lines: Dict[int, str] = {}
     for issue in all_issues:
-        # Some new V3 issues have node_id fallback, we need to map to line roughly
-        # For our mock, we just skip line map if missing
-        line = issue.get("line", 0)
-        if hasattr(issue, 'get'):
-            severity = issue.get("severity", "LOW")
-        else:
-            severity = "LOW"
-            
+        line = int(issue.get("line", 0) or 0)
+        severity = str(issue.get("severity", "LOW"))
         if line > 0:
-            highlighted_lines[line] = max(
-                highlighted_lines.get(line, "LOW"),
-                severity,
-                key=lambda s: {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}.get(s, 1)
-            )
+            prev = highlighted_lines.get(line, "LOW")
+            highlighted_lines[line] = max(prev, severity, key=lambda s: weight.get(s, 1))
 
+    notes = list(sa["notes"])
+    if parse_result.get("analysis_mode") == "heuristic":
+        notes.append(
+            "This code could not be fully parsed"
+            + (" (looks like C++)" if parse_result.get("cpp_like") else "")
+            + "; a heuristic analysis was used, so findings are less precise and path-sensitive checks "
+              "(use-after-free, double free, uninitialized variables) were skipped."
+        )
+
+    mem_types = ("MEMORY_LEAK", "USE_AFTER_FREE", "DOUBLE_FREE", "INVALID_FREE", "NULL_DEREF")
     return {
         "success": True,
         "language": parse_result.get("language", "C"),
+        "analysis_mode": parse_result.get("analysis_mode", "ast"),
+        "notes": notes,
         "metrics": {
             "lines_of_code": int(parse_result.get("lines_of_code", 0)),
             "num_functions": int(parse_result.get("num_functions", 0)),
@@ -197,25 +172,25 @@ def _run_analysis(source: str, language: str, model_type: str = "dl") -> dict:
             "max_nesting_depth": int(parse_result.get("max_nesting_depth", 0)),
             "cyclomatic_complexity": int(complexity_result.get("cyclomatic_complexity", 1)),
             "time_complexity": str(complexity_result.get("time_complexity", "O(n)")),
-            "memory_leak_count": int(memory_result.get("memory_leak_count", 0) + v3_leak_count),
+            "memory_leak_count": int(memory_result.get("memory_leak_count", 0)),
             "unsafe_function_count": int(unsafe_result.get("unsafe_function_count", 0)),
             "recursion_count": int(recursion_result.get("recursion_count", 0)),
-            "v3_active": model_type in ("v3", "all", "dl")
+            "v3_active": bool(sa["cfgs"]),
         },
         "risk": {
             "score": int(ml_result.get("risk_score", 5)),
             "label": str(ml_result.get("risk_label", "Unknown")),
             "confidence": int(ml_result.get("confidence", 0)),
-            "explanations": ml_result.get("explanations", []),
+            "explanations": list(ml_result.get("explanations", [])) + notes,
             "probabilities": ml_result.get("probabilities", {"Clean": 33, "Moderate Risk": 34, "High Risk": 33}),
             "comparisons": ml_result.get("comparisons", {}),
             "categories": {
-                "memory": len(memory_result.get("issues", [])) + len([i for i in v3_issues if i.get("type", "") in ["MEMORY_LEAK", "USE_AFTER_FREE", "DOUBLE_FREE", "INVALID_FREE"]]),
-                "data_flow": len([i for i in v3_issues if i.get("type", "") in ["UNINITIALIZED_VARIABLE", "INFINITE_LOOP"]]),
-                "architecture": len([i for i in v3_issues if i.get("type", "") in ["HIGH_COMPLEXITY", "DEEP_NESTING", "DEAD_CODE"]]),
+                "memory": sum(1 for i in all_issues if i.get("type") in mem_types),
+                "data_flow": sum(1 for i in all_issues if i.get("type") in ("UNINITIALIZED_VARIABLE", "INFINITE_LOOP")),
+                "architecture": sum(1 for i in all_issues if i.get("type") in ("HIGH_COMPLEXITY", "DEEP_NESTING", "DEAD_CODE")),
                 "recursion": int(recursion_result.get("recursion_count", 0)),
-                "unsafe_headers": int(unsafe_result.get("unsafe_function_count", 0))
-            }
+                "unsafe_headers": int(unsafe_result.get("unsafe_function_count", 0)),
+            },
         },
         "issues": [
             {
@@ -223,26 +198,26 @@ def _run_analysis(source: str, language: str, model_type: str = "dl") -> dict:
                 "message": str(issue.get("message", "")),
                 "line": int(issue.get("line", 0)) if issue.get("line") else 0,
                 "type": str(issue.get("type", "")),
-                "suggestion": str(issue.get("suggestion", ""))
+                "suggestion": str(issue.get("suggestion", "")),
+                "fix": issue.get("fix"),            # {title, line, before, after, note} or null
             }
             for issue in all_issues
         ],
+        "suppressed": [{"line": int(i.get("line") or 0), "type": str(i.get("type", "")), "message": str(i.get("message", ""))}
+                       for i in sa["suppressed"]],
         "highlighted_lines": highlighted_lines,
         "function_complexity": [
             {
                 "function": str(fc.get("function", fc.get("name", "__main__"))),
-                "cyclomatic_complexity": int(fc.get("cyclomatic_complexity", 1))
+                "cyclomatic_complexity": int(fc.get("cyclomatic_complexity", 1)),
             }
             for fc in (complexity_result.get("function_complexity", []) or [])
         ],
         "functions": [
-            {
-                "name": str(fn.get("name", "")),
-                "line": int(fn.get("line", 0)) if fn.get("line") else 0
-            }
+            {"name": str(fn.get("name", "")), "line": int(fn.get("line", 0)) if fn.get("line") else 0}
             for fn in (parse_result.get("functions", []) or [])
         ],
-        "cfgs": cfgs if model_type in ("v3", "dl") else [],
+        "cfgs": _call_graph(sa["cfgs"]),
         "suggestions": suggestion_result,
         "parse_errors": parse_result.get("parse_errors", []),
         "features": feature_data.get("features", []),

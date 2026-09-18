@@ -2,7 +2,7 @@
 IntelliReview — /health route
 """
 from fastapi import APIRouter
-from datetime import datetime
+from datetime import datetime, timezone
 
 router = APIRouter()
 
@@ -12,5 +12,5 @@ async def health_check():
     return {
         "status": "ok",
         "service": "IntelliReview API",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }

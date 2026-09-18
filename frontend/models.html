@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>How IntelliReview decides — and how well it works</title>
+  <meta name="description" content="How a verdict is reached, which models are involved, and measured accuracy on held-out real code, including what the analyzer misses." />
+  <meta name="theme-color" content="#f0ebdd" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,300..600;1,6..72,300..600&display=swap" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <a class="skip" href="#top">Skip to the text</a>
+  <header class="masthead">
+    <div class="wrap masthead__row">
+      <a class="wordmark" href="./" aria-label="IntelliReview, home">Intelli<em>Review</em></a>
+      <nav class="mast-nav" aria-label="Site">
+        <a href="./">Review</a>
+        <a href="models.html" aria-current="page">How it decides</a>
+      </nav>
+    </div>
+    <div class="wrap"><div class="rule-double" aria-hidden="true"></div></div>
+  </header>
+
+  <main class="wrap essay" id="top">
+    <header class="essay__head">
+      <p class="kicker">Notes on the method</p>
+      <h1>How a <em>verdict</em> is reached.</h1>
+      <p>IntelliReview doesn’t hand your file to one model and print whatever comes back. It reads the code, collects findings,
+        and only then asks a model how they add up. Here is each step, and how well the whole thing works when it is
+        tested honestly.</p>
+    </header>
+
+    <div class="step">
+      <div class="step__no">1</div>
+      <div>
+        <h2>It parses the file.</h2>
+        <p>C goes through a real C parser, Java through a real Java parser. Real code refers to types declared in headers
+          we can’t see (<code>pthread_t</code>, <code>HANDLE</code>, your own typedefs), so when the parser stumbles on an unknown
+          type name it learns it and tries again, rather than giving up.</p>
+        <p>C++ can’t be parsed that way, so it gets a lighter, pattern-based read.</p>
+      </div>
+      <aside><b>You will know</b>Every review says whether it was a full parse or a heuristic one, in the measurements list.</aside>
+    </div>
+
+    <div class="step">
+      <div class="step__no">2</div>
+      <div>
+        <h2>It follows the data.</h2>
+        <p>For each C function it builds a control-flow graph and follows every pointer through it: allocated, checked for NULL,
+          freed, moved, handed to another function. It knows that <code>if (!p) return;</code> means the allocation failed and
+          nothing leaks. It tracks how big each buffer is and what range an index can take.</p>
+        <p>For Java it follows values from where they arrive (<code>readLine</code>, <code>getParameter</code>, environment
+          variables) to where they do damage: a SQL string, a shell command, a file path, an HTML response.</p>
+      </div>
+      <aside><b>Dead branches</b>A condition that is a constant, like <code>if (DEBUG)</code> with <code>DEBUG</code> set to 0, is folded away, so code that can never run doesn’t raise alarms.</aside>
+    </div>
+
+    <div class="step">
+      <div class="step__no">3</div>
+      <div>
+        <h2>It grades each finding by what it proves.</h2>
+        <p>A copy proven to be larger than its destination is Critical. An unbounded <code>strcpy</code> whose source is a function
+          parameter is High. The same <code>strcpy</code> of a short constant into a big enough buffer isn’t flagged at all.</p>
+        <p>Complexity and deep nesting are reported, but they never move the verdict. A long function is a maintenance problem,
+          not a vulnerability.</p>
+      </div>
+      <aside><b>Why not more red</b>“High risk” needs a Critical or High security finding behind it. Style and reliability issues top out at Moderate.</aside>
+    </div>
+
+    <div class="step">
+      <div class="step__no">4</div>
+      <div>
+        <h2>Then four models weigh in.</h2>
+        <p>Each model looks at the counts and shape of the findings and estimates a risk level. Their say is bounded by the
+          evidence: no model can call code High risk without a serious finding behind it, and a serious finding always makes the
+          verdict High, whatever the models say. Nor can a model call code Moderate when there is nothing concrete to point at.</p>
+        <p>That rule was chosen by measurement. Of three ways of combining the models with the findings, the one used here scored best on code the models had never seen.</p>
+      </div>
+      <aside><b>Pick one, or all four</b>Choose “All four” on the review page to see them side by side, and where they disagree.</aside>
+    </div>
+
+    <section class="chapter" aria-labelledby="models-h">
+      <h2 id="models-h">The four models</h2>
+      <p class="lede">They are small on purpose. The hard part is the analysis that feeds them, not the model.</p>
+      <table class="grid" id="model-table">
+        <thead><tr><th>Name</th><th>What it is</th><th class="num">Inputs</th><th>What it sees</th></tr></thead>
+        <tbody><tr><td colspan="4">Loading…</td></tr></tbody>
+      </table>
+    </section>
+
+    <section class="chapter" aria-labelledby="works-h">
+      <h2 id="works-h">How well it works</h2>
+      <p class="lede">Measured on real, expert-labelled code the models had never seen. Whole vulnerability classes are held out
+        at a time, so a model is never tested on a kind of flaw it was trained on.</p>
+      <table class="grid" id="results-table">
+        <caption id="results-caption"></caption>
+        <thead><tr>
+          <th>Reader</th><th class="num">Accuracy alone</th><th class="num">Accuracy as used</th><th class="num">Macro-F1</th>
+          <th class="num">Flags clean code</th><th class="num">Wrongly High</th><th class="num">Finds High-risk code</th>
+        </tr></thead>
+        <tbody><tr><td colspan="7">Loading…</td></tr></tbody>
+      </table>
+      <p class="pullquote" id="quote"></p>
+    </section>
+
+    <section class="chapter" aria-labelledby="miss-h">
+      <h2 id="miss-h">What it gets wrong</h2>
+      <p class="lede">A tool that only lists its strengths is selling something. These are the known gaps.</p>
+      <div class="cols-2">
+        <div>
+          <h3>What it misses</h3>
+          <ul>
+            <li>Logic errors and wrong answers. It reads for memory and injection bugs, not for what your code was meant to do.</li>
+            <li>Integer overflow and signedness bugs.</li>
+            <li>Race conditions and time-of-check/time-of-use gaps.</li>
+            <li>Ownership that crosses functions or files: a pointer freed by a callee it can’t see.</li>
+            <li>In Java, data that crosses from one method into another before it reaches a query.</li>
+            <li>In C++, anything beyond <code>new</code>/<code>delete</code> pairing and the unsafe C calls.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>What it over-calls</h3>
+          <ul>
+            <li>Long files. Small findings add up, so a file with dozens of functions is more likely to collect at least one
+              Medium finding and be called Moderate.</li>
+            <li>An unchecked <code>malloc</code> is a real weakness but a low-stakes one; it lands on Moderate at most.</li>
+            <li>Java parameters of non-private methods are treated as possibly hostile, which is cautious by design.</li>
+            <li>Modern AES defaults such as <code>Cipher.getInstance("AES")</code> are flagged because the JDK default is ECB mode.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="chapter" aria-labelledby="data-h">
+      <h2 id="data-h">Where the training data comes from</h2>
+      <p class="lede" id="data-text"></p>
+    </section>
+  </main>
+
+  <footer class="colophon">
+    <div class="wrap">
+      <p>Numbers on this page are read live from the training report the models were built with
+        (<code>backend/ml/model_report.json</code>). When the models are retrained, this page changes with them.</p>
+      <p><em>Set in Newsreader and IBM Plex Mono.</em></p>
+    </div>
+  </footer>
+  <script src="models.js"></script>
+</body>
+</html>
