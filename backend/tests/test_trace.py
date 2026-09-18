@@ -32,7 +32,12 @@ def test_result_carries_an_ordered_trace(client):
 
 def test_compare_all_traces_every_model(client):
     tr = client.post("/api/analyze", json={"code": BAD, "language": "C", "model_type": "all"}).json()["trace"]
-    assert {e["model"] for e in tr if e["kind"] == "model"} == {"ensemble", "dl", "v3", "v4_dl"}
+    models = {e["model"] for e in tr if e["kind"] == "model"}
+    from ml.predict import DL_MODEL_PATH
+    if os.path.exists(DL_MODEL_PATH):
+        assert models == {"ensemble", "dl", "v3", "v4_dl"}
+    else:
+        assert models == {"ensemble", "v3"}
 
 
 def test_stream_is_ndjson_ending_with_the_result(client):
